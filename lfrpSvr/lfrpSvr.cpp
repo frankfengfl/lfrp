@@ -13,7 +13,11 @@
 
 // 本地业务服务信息
 std::string strSvr = "127.0.0.1";
-int nSvrPort = 3389; // 10001
+#ifdef _DEBUG
+int nSvrPort = 10001;
+#else
+int nSvrPort = 3389;
+#endif
 
 // 通道服务信息
 std::string strTun = "127.0.0.1"; 
