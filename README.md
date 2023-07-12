@@ -1,13 +1,13 @@
 # lfrp
-Lfrp is light fast reverse proxy that allows you to expose a local server located behind a NAT or firewall to the Internet. 
+Lfrp is light fast reverse proxy that allows you to expose a local server located behind a NAT or firewall to the Internet. All streams on the Internet are encrypted, even without plaintext headers.
 
 It's just a backup of frp, when Win10/Win11 intercept frp (so I can't connect to my work virtual machine without administrator privileges during meetings).
 
 Otherwise， this is so simple that it's easy to use for students to learn.
 
 Roadmap：
-  1. Add AES， because some company will scan network stream；
-  2. Build for Linux， because most people may want use linux TunSvr.
+  1. Build for Linux， because Most people use linux to deploy lfrpTun.
+  2. add epoll & iocp? Select mode is enough for personal use, but can be used for learning purposes.
 
 学习说明：
   1. 使用lfrp.sln可以直接编译出lfrpCli、lfrpTun、lfrpSvr、EchoServer、EchoClient，Debug模式可以全部在本地运行，前四个启动没有顺序要求，最后再启动EchoClient即可调试。
