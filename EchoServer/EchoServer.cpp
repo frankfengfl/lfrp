@@ -18,15 +18,20 @@ int curr_size = 0; //当前的句柄数
 #define OP_READ 0x10
 #define OP_WRITE 0x20//定义结构体用于储存通信信息
 
+#define MAX_SEND_SIZE   512
+#define BUFFER_SIZE     MAX_SEND_SIZE+1
+
 int nPort = DEFAULT_PORT;
 typedef struct _socklist
 {
     SOCKET sock;
     DWORD Op;
     char name[100];
-    char Buffer[128];
+    char Buffer[BUFFER_SIZE];
     int  bufLen;
-} Socklist; int main(int argc, char** argv)
+} Socklist; 
+
+int main(int argc, char** argv)
 {
     int i = 0;
     for (i = 0; i < argc; i++)
@@ -117,7 +122,7 @@ typedef struct _socklist
                     if (FD_ISSET(sockList[i].sock, &fdRead))
                     {
                         //开始recv
-                        nRet = recv(sockList[i].sock, sockList[i].Buffer, 127, 0);
+                        nRet = recv(sockList[i].sock, sockList[i].Buffer, MAX_SEND_SIZE, 0);
                         if (nRet == SOCKET_ERROR || nRet == 0)
                         {
                             closesocket(sockList[i].sock);

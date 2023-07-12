@@ -9,6 +9,13 @@
 #include <vector>
 #include <winsock2.h>
 
+/*******************************************************
+* 1.本程序为专用AES，只用一个全局key加密
+* 2.本程序一律采用fill模式，解包时自动按填充的折算
+* 3.本程序跟lfrpTun相关的数据流完全加密，不留数据头，避免被检测头
+********************************************************/
+#define USE_AES
+
 #define LOCAL_IP "127.0.0.1"
 #define DEFAULT_BACKLOG 5
 #define MAX_IO_PEND 10
@@ -72,12 +79,7 @@ public:
 
     ~CLfrpSocket()
     {
-        if (pBuffer)
-        {
-            delete[] pBuffer;
-            pBuffer = nullptr;
-            nBufAlloc = 0;
-        }
+        ClearBuffer();
     }
 
     void InitMember()
@@ -104,6 +106,17 @@ public:
             pBuffer = nullptr;
             nBufAlloc = 0;
         }
+
+#ifdef USE_AES
+        if (pEncBuffer)
+        {
+            delete[] pEncBuffer;
+            pEncBuffer = nullptr;
+            nEncBufAlloc = 0;
+        }
+        nEncBufLen = 0;
+        memset(EncBuffer, 0, ELEM_BUFFER_SIZE);
+#endif
 
         Op = 0;
         nType = PACK_TYPE_UNKNOW;
@@ -133,6 +146,13 @@ public:
 
     //发送队列
     CVecBuffer vecSendBuf;
+
+#ifdef USE_AES
+    char EncBuffer[ELEM_BUFFER_SIZE];
+    char* pEncBuffer;           // 收到的原始加密流
+    int nEncBufLen;
+    int nEncBufAlloc;
+#endif
 };
 
 class CSocketPair
@@ -152,20 +172,50 @@ typedef std::map<int, int>  CSeqMap;                    // socketID->NextSeq
 
 
 void LfrpSetFD(CLfrpSocket* pSocket, fd_set& fdRead, fd_set& fdWrite);
-int ParsePackHeader(CLfrpSocket* pSocket);
 char* GetSocketBuffer(CLfrpSocket* pSocket);
-int LfrpRecv(CLfrpSocket* pSocket);
-void CopyOnePack(CLfrpSocket* pSocket, char* pBuf);
+
+// 解析包里的头信息
+int ParsePackHeader(CLfrpSocket* pSocket);
+
+// 添加nRet的pData数据到Buffer
+bool AddDataToSocketBuffer(char Buffer[], char*& pBuffer, int& nBufLen, int& nBufAlloc, char* pData, int nRet);
+
+// 从Buffer里移nPackLen的包数据到pBuf
+bool RemoveDataFromSocketBuffer(char Buffer[], char*& pBuffer, int& nBufLen, int& nBufAlloc, char* pBuf, int& nPackLen);
+
+// recv封装，用于加入aes以及内存管理
+int LfrpRecv(CLfrpSocket* pSocket);                          // 数据流接收封装，返回值小于0错误，等于0断开，大于0正常
+
+// 三个服务都是socket对，之间流转数据包
 int MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket);
+
+void CopyOnePack(CLfrpSocket* pSocket, char* pBuf);
+
+// 丢弃一个数据包
 void DropOnePack(CLfrpSocket* pSocket);
-void MakeDataEndPack(CBuffer& buf, int nSocketID, int nSeq);    // User侧或Bussiness侧异常，组装通知另一侧断开的消息
-void MakeTunEndPack(CBuffer& buf);                              // LfrpTun服务根据一侧通道异常，组装通知Client或Server断开业务的消息
+
+// User侧或Bussiness侧异常，组装通知另一侧断开的消息
+void MakeDataEndPack(CBuffer& buf, int nSocketID, int nSeq);    
+
+// LfrpTun服务根据一侧通道异常，组装通知Client或Server断开业务的消息
+void MakeTunEndPack(CBuffer& buf);        
+
+// close socket封装，带上清理内存
 void CloseLfrpSocket(CLfrpSocket* pSocket);
-int GetNextSeq(SeqEnum nType, int nSocketID);                   // Seq是User侧或Bussiness侧各自发起包带的，用于调试数据包在链路流转的问题
+
+// Seq是User侧或Bussiness侧各自发起包带的，用于调试数据包在链路流转的问题
+int GetNextSeq(SeqEnum nType, int nSocketID);     
 void RemoveSeqKey(int nSocketID);
+
+// 获取buffer中的socket信息
 void GetInfoFromBuf(CBuffer& buf, int& nType, int& nLen, int& nSocketID, int& nSeq);
 
+// 获取最后一个包信息，注意这个函数要求最后的包头至少包含包大小字段
+void GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen);
+
+// 连接socket封装
 int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort);
 
-std::string GetCurTimeStr();    // 准备给日志使用
+// 准备给日志使用
+std::string GetCurTimeStr();    
 #endif

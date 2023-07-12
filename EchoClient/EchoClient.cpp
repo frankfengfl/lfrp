@@ -17,6 +17,9 @@ static SOCKET sClient;
 static SOCKET sSever, sSever_c[CLENT_NUM];
 struct sockaddr_in sSever_c_sd[CLENT_NUM];
 
+#define MAX_SEND_SIZE   512
+#define BUFFER_SIZE     MAX_SEND_SIZE+1
+
 #define USER_ERROR -1
 
 int tcp_client_init(const char* ip, int iPort)
@@ -63,7 +66,7 @@ int tcp_client_rcv(unsigned char* buff, int* len)
 {
     int iLen; //从服务器端接收的数据长度
 
-    iLen = recv(sClient, (char*)buff, 1024, 0); //从服务器端接收数据
+    iLen = recv(sClient, (char*)buff, MAX_SEND_SIZE, 0); //从服务器端接收数据
     if (iLen == 0)
         return -1;
     else if (iLen == SOCKET_ERROR)
@@ -71,8 +74,8 @@ int tcp_client_rcv(unsigned char* buff, int* len)
         printf("recv() Failed: %d\n", WSAGetLastError());
         return -1;
     }
-    else
-        printf("recv() data from server: %s\n", buff); // 输出接收数据
+    //else
+    //    printf("recv() data from server: %s\n", buff); // 输出接收数据
     *len = iLen;
 
     return iLen;
@@ -85,21 +88,39 @@ int close_tcp_client()
     return 0;
 }
 
+
 int tcp_client_test()
 {
-    unsigned char buff[1024] = { 0 };
+    unsigned char buff[BUFFER_SIZE] = { 0 };
     int rcv_len;
 
     tcp_client_init(ip.c_str(), nPort);
     int nCount = 10;
+    srand((unsigned int)time(0));
     while (nCount > 0)
     {
         std::string str = "test";
+        int nSize = rand() % MAX_SEND_SIZE;
+        for (size_t i = 0; i < nSize; i++)
+        {
+            //char c = (rand() % 26) + 'a';
+            char c = (i % 26) + 'a';
+            str += c;
+        }
+        
+        printf("send:%s\n", str.c_str());
         tcp_client_send((unsigned char*)str.c_str(), str.length());
-        memset(buff, 0, 1024);
+        memset(buff, 0, BUFFER_SIZE);
         rcv_len = tcp_client_rcv(buff, &rcv_len);
         if (rcv_len > 0)
+        {
+            if (str.compare((char*)buff) != 0)
+            {
+                printf("find error\n\n");
+            }
             printf("rcv:%s\n", buff);
+        }
+            
 
         Sleep(1);
         nCount--;

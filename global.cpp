@@ -8,6 +8,7 @@
 #include <map>
 #include <vector>
 #include "global.h"
+#include "aes.h"
 
 #pragma comment(lib,"ws2_32.lib")
 
@@ -80,6 +81,85 @@ char* GetSocketBuffer(CLfrpSocket* pSocket)
     }
 }
 
+bool AddDataToSocketBuffer(char Buffer[], char*& pBuffer, int& nBufLen, int& nBufAlloc, char* pData, int nRet)
+{
+    // 拷贝数据
+    if (nBufLen + nRet <= ELEM_BUFFER_SIZE)
+    { // 只用Buffer
+        memcpy(&(Buffer[nBufLen]), pData, nRet);
+        nBufLen += nRet;
+    }
+    else
+    { // 新数据存在pBuffer
+        char* pNewBuf = nullptr;
+        if (nBufLen + nRet > nBufAlloc)
+        { // 原存储不够（原先存Buffer或pBuffer）
+            // 2倍扩张
+            if (nBufAlloc == 0)
+                nBufAlloc = ELEM_BUFFER_SIZE * 2;     // 初始2倍
+            while (nBufAlloc < nBufLen + nRet)
+            {
+                nBufAlloc = nBufAlloc * 2;
+            }
+            pNewBuf = new char[nBufAlloc];
+
+            if (nBufLen > ELEM_BUFFER_SIZE)
+            { // 原先数据存在pBuffer
+                memcpy(pNewBuf, pBuffer, nBufLen);
+                memcpy(&(pNewBuf[nBufLen]), pData, nRet);
+                delete[] pBuffer;
+                pBuffer = pNewBuf;
+            }
+            else
+            { // 原先数据存在Buffer
+                memcpy(pNewBuf, Buffer, nBufLen);
+                memcpy(&(pNewBuf[nBufLen]), pData, nRet);
+                pBuffer = pNewBuf;
+            }
+        }
+        else
+        { // 够的，肯定已经有pBuffer了，直接加数据即可
+            memcpy(&(pBuffer[nBufLen]), pData, nRet);
+        }
+
+        nBufLen = nBufLen + nRet;
+    }
+
+    return true;
+}
+
+bool RemoveDataFromSocketBuffer(char Buffer[], char*& pBuffer, int& nBufLen, int& nBufAlloc, char* pBuf, int& nPackLen)
+{
+    if (nPackLen <= 0 || nBufLen < nPackLen)
+        return false;
+
+    if (nBufLen > ELEM_BUFFER_SIZE)
+    {
+        memcpy(pBuf, pBuffer, nPackLen);
+        if (nBufLen - nPackLen > ELEM_BUFFER_SIZE)
+        { //仍存pBuffer
+            memmove(pBuffer, &(pBuffer[nPackLen]), nBufLen - nPackLen);
+        }
+        else
+        { // 移到Buffer
+            memcpy(Buffer, &(pBuffer[nPackLen]), nBufLen - nPackLen);
+            delete[] pBuffer;
+            pBuffer = nullptr;
+            nBufAlloc = 0;
+        }
+    }
+    else
+    {
+        memcpy(pBuf, Buffer, nPackLen);
+        memmove(Buffer, &(Buffer[nPackLen]), nBufLen - nPackLen);
+    }
+
+    nBufLen -= nPackLen;
+    nPackLen = 0;
+
+    return true;
+}
+
 int LfrpRecv(CLfrpSocket* pSocket)
 {
     if (pSocket == nullptr)
@@ -96,48 +176,97 @@ int LfrpRecv(CLfrpSocket* pSocket)
     }
     else if (nRet > 0)
     {
-        // 拷贝数据
-        if (pSocket->nBufLen + nRet <= ELEM_BUFFER_SIZE)
-        { // 只用Buffer
-            memcpy(&(pSocket->Buffer[pSocket->nBufLen]), Buffer, nRet);
-            pSocket->nBufLen += nRet;
-        }
-        else
-        { // 新数据存在pBuffer
-            char* pBuffer = nullptr;
-            if (pSocket->nBufLen + nRet > pSocket->nBufAlloc)
-            { // 原存储不够（原先存Buffer或pBuffer）
-                // 2倍扩张
-                if (pSocket->nBufAlloc == 0) 
-                    pSocket->nBufAlloc = ELEM_BUFFER_SIZE * 2;     // 初始2倍
-                while (pSocket->nBufAlloc < pSocket->nBufLen + nRet)
+        PRINT_INFO("Svr %s,%d: LfrpRecv recv pack size %d\n ", __FUNCTION__, __LINE__, nRet);
+#ifdef USE_AES
+        // 先加数据到编码缓存
+        AddDataToSocketBuffer(pSocket->EncBuffer, pSocket->pEncBuffer, pSocket->nEncBufLen, pSocket->nEncBufAlloc, Buffer, nRet);
+        if (pSocket->nEncBufLen >= AES_BLOCK_SIZE)
+        { // 有足够的解码数据了
+            int nPackLen = pSocket->nEncBufLen / AES_BLOCK_SIZE * AES_BLOCK_SIZE;   // 取整块
+            char* pBuf = new char[nPackLen];
+            if (pBuf)
+            {
+                int nDecPackLen = nPackLen;
+                if (RemoveDataFromSocketBuffer(pSocket->EncBuffer, pSocket->pEncBuffer, pSocket->nEncBufLen, pSocket->nEncBufAlloc, pBuf, nPackLen))
                 {
-                    pSocket->nBufAlloc = pSocket->nBufAlloc * 2;
-                }
-                pBuffer = new char[pSocket->nBufAlloc];
+                    CAES cAes;
+                    int nDecLen = 0;
+                    char* pDec = (char*)cAes.Decrypt(pBuf, nDecPackLen, nDecLen);
+                    if (pDec && nDecLen >= AES_BLOCK_SIZE)   // 接触包至少有一个AES_BLOCK_SIZE，否则就是有问题
+                    {
+                        bool bAddHeader = false;
+                        char* pData = pDec;
+                        int nDataLen = nDecLen;
+                        if (pSocket->nBufLen < PACK_SIZE_HEADER)
+                        { // 原先不够，拷贝包头大小过去解析，否则如果原先有头信息了，不需要拷贝节省性能
+                            bAddHeader = true;
+                        }
+                        // 一次可能收到多个包，循环处理
+                        while (nDataLen >= AES_BLOCK_SIZE)
+                        {
+                            if (bAddHeader)
+                            { // 原先不够，拷贝包头大小过去解析，否则如果原先有头信息了，不需要拷贝节省性能
+                                PRINT_INFO("%s,%d: Add header size %d\n ", __FUNCTION__, __LINE__, PACK_SIZE_HEADER);
+                                AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pData, PACK_SIZE_HEADER);
+                                pData += PACK_SIZE_HEADER;
+                                nDataLen -= PACK_SIZE_HEADER;
+                            }
+                            ParsePackHeader(pSocket);
 
-                if (pSocket->nBufLen > ELEM_BUFFER_SIZE)
-                { // 原先数据存在pBuffer
-                    memcpy(pBuffer, pSocket->pBuffer, pSocket->nBufLen);
-                    memcpy(&(pBuffer[pSocket->nBufLen]), Buffer, nRet);
-                    delete[] pSocket->pBuffer;
-                    pSocket->pBuffer = pBuffer;
+                            int nBufLen = 0;
+                            int nPackLen = 0;
+                            // Buffer里可能多个包，需要连到最后一个包上。取出最后一个包已经收到的数据，以及包大小
+                            GetLastPackLenInfo(pSocket, nBufLen, nPackLen);     
+                            if (nBufLen + nDataLen > nPackLen)
+                            { // 如果包收全了，解码包里才会有补码，跳过补码
+                                int nFillLen = ((nPackLen + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE) * AES_BLOCK_SIZE - nPackLen;
+                                PRINT_INFO("%s,%d: aes fill size %d\n ", __FUNCTION__, __LINE__, nFillLen);
+                                //if (nFillLen)
+                                {
+                                    int nRPackLen = nPackLen - nBufLen; // 剩余包大小是整个包大小减去已经移到Buffer里的
+                                    if (nRPackLen > 0)
+                                    { // 剩余包还有内容，先填入
+                                        PRINT_INFO("%s,%d: Add nRPackLen size %d\n ", __FUNCTION__, __LINE__, nRPackLen);
+                                        AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pData, nRPackLen);
+                                    }
+                                    pData = pData + nRPackLen + nFillLen;
+                                    nDataLen = nDataLen - nRPackLen - nFillLen;
+                                }
+                                
+                                // 剩余nDataLen是下个包，继续解析
+                                bAddHeader = true;  // 下个包需要先添加包头
+                                //continue;
+                            }
+                            else
+                            {
+                                // 如果包还没收全或正好收全，不会碰到补码，直接添加
+                                if (nDataLen)
+                                {
+                                    PRINT_INFO("%s,%d: Add rest nDataLen size %d\n ", __FUNCTION__, __LINE__, nDataLen);
+                                    AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pData, nDataLen);
+                                    nDataLen = 0;
+                                }
+                            }
+                        }
+                        
+                        delete[] pDec;
+                    }
+                    else
+                    {
+                        PRINT_ERROR("%s,%d: aes decrypt error\n ", __FUNCTION__, __LINE__);
+                    }
                 }
-                else
-                { // 原先数据存在Buffer
-                    memcpy(pBuffer, pSocket->Buffer, pSocket->nBufLen);
-                    memcpy(&(pBuffer[pSocket->nBufLen]), Buffer, nRet);
-                    pSocket->pBuffer = pBuffer;
-                }
+                delete[] pBuf;
             }
             else
-            { // 够的，肯定已经有pBuffer了，直接加数据即可
-                pBuffer = pSocket->pBuffer;
-                memcpy(&(pBuffer[pSocket->nBufLen]), Buffer, nRet);
+            {
+                PRINT_ERROR("%s,%d: new buffer error size %d\n ", __FUNCTION__, __LINE__, nPackLen);
             }
-            
-            pSocket->nBufLen = pSocket->nBufLen + nRet;  
         }
+        
+#else
+        AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, Buffer, nRet);
+#endif
 
         ParsePackHeader(pSocket);
     }
@@ -146,39 +275,13 @@ int LfrpRecv(CLfrpSocket* pSocket)
 
 void CopyOnePack(CLfrpSocket* pSocket, char* pBuf)
 {
-    if (pSocket->nPackLen <= 0 && pSocket->nBufLen >= pSocket->nPackLen)
-        return;
-
-    if (pSocket->nBufLen > ELEM_BUFFER_SIZE)
+    if (RemoveDataFromSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pBuf, pSocket->nPackLen))
     {
-        memcpy(pBuf, pSocket->pBuffer, pSocket->nPackLen);
-        if (pSocket->nBufLen - pSocket->nPackLen > ELEM_BUFFER_SIZE)
-        { //仍存pBuffer
-            memmove(pSocket->pBuffer, &(pSocket->pBuffer[pSocket->nPackLen]), pSocket->nBufLen - pSocket->nPackLen);
-        }
-        else
-        { // 移到Buffer
-            memcpy(pSocket->Buffer, &(pSocket->pBuffer[pSocket->nPackLen]), pSocket->nBufLen - pSocket->nPackLen);
-            delete[] pSocket->pBuffer;
-            pSocket->pBuffer = nullptr;
-            pSocket->nBufAlloc = 0;
-        }
-    }
-    else
-    {
-        memcpy(pBuf, pSocket->Buffer, pSocket->nPackLen);
-        if (pSocket->nBufLen > pSocket->nPackLen)
-        {
-            memmove(pSocket->Buffer, &(pSocket->Buffer[pSocket->nPackLen]), pSocket->nBufLen - pSocket->nPackLen);
-        }
-    }
+        pSocket->nType = PACK_TYPE_UNKNOW;
 
-    pSocket->nBufLen -= pSocket->nPackLen;
-    pSocket->nPackLen = 0;
-    pSocket->nType = PACK_TYPE_UNKNOW;
-
-    // 取走包要看下一个包内容，用于粘包时业务连续处理
-    ParsePackHeader(pSocket);
+        // 取走包要看下一个包内容，用于粘包时业务连续处理
+        ParsePackHeader(pSocket);
+    }
 }
 
 int MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
@@ -333,6 +436,23 @@ void GetInfoFromBuf(CBuffer& buf, int& nType, int& nLen, int& nSocketID, int& nS
             {
                 // nothing to get
             }
+        }
+    }
+}
+
+void GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen)
+{
+    char* pBuffer = GetSocketBuffer(pSocket);
+    nBufLen = pSocket->nBufLen;
+    nPackLen = pSocket->nPackLen;
+    if (pBuffer)
+    {
+        while (nBufLen > nPackLen)
+        {
+            nBufLen -= nPackLen;
+            pBuffer += nPackLen;
+            int* pData = (int*)pBuffer;
+            nPackLen = pData[2];    // 这个函数这里肯定有足够的头了，直接取
         }
     }
 }

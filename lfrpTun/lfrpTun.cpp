@@ -8,6 +8,7 @@
 #include <map>
 #include <vector>
 #include "../global.h"
+#include "../aes.h"
 
 #pragma comment(lib,"ws2_32.lib")
 
@@ -16,7 +17,10 @@ CSocketVec vecSocket;          // 刚建立连接，还未判断类型的临时s
 
 // 服务监听端口信息
 std::string strHost = "127.0.0.1";
-int nPort = 8611;
+int nPort = 6868;
+
+// AES key
+std::string strAesKey = "asdf1234567890";
 
 void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
 {
@@ -246,14 +250,25 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                     GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
                     PRINT_INFO("Tun %s,%d: Server send socketID %d pack to BusServer size %d seq %d\n ", __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
+                    // 发送前加密
+                    char* pSendBuffer = buf.pBuffer;
+                    int nSendLen = buf.nLen;
+#ifdef USE_AES
+                    CAES cAes;
+                    pSendBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nSendLen, true);
+#endif
                     //开始send
-                    nRet = send(pair.pServer->sock, buf.pBuffer, buf.nLen, 0);
+                    nRet = send(pair.pServer->sock, pSendBuffer, nSendLen, 0);
                     while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-                    {
-                        PRINT_ERROR("Tun %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, buf.nLen);
+                    { // 缓冲区堵塞等一下重发
+                        PRINT_ERROR("Tun %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, nSendLen);
                         Sleep(1);
                         nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, 0);
                     }
+#ifdef USE_AES
+                    delete[] pSendBuffer;
+#endif
+                    delete[] buf.pBuffer;
                     //事实上，这里可能会有nRet小于bufLen的情况
                     if (nRet == SOCKET_ERROR || nRet == 0)
                     {
@@ -290,14 +305,25 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                     GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
                     PRINT_INFO("Tun %s,%d: Vistor send socketID %d pack to Client size %d seq %d\n ", __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
+                    // 发送前加密
+                    char* pSendBuffer = buf.pBuffer;
+                    int nSendLen = buf.nLen;
+#ifdef USE_AES
+                    CAES cAes;
+                    pSendBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nSendLen, true);
+#endif
                     //开始send
-                    nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, 0);
+                    nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, 0);
                     while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-                    {
-                        PRINT_ERROR("Tun %s,%d: send to Vistor err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, buf.nLen);
+                    { // 缓冲区堵塞等一下重发
+                        PRINT_ERROR("Tun %s,%d: send to Vistor err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, nSendLen);
                         Sleep(1);
                         nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, 0);
                     }
+#ifdef USE_AES
+                    delete[] pSendBuffer;
+#endif
+                    delete[] buf.pBuffer;
                     //事实上，这里可能会有nRet小于bufLen的情况
                     if (nRet == SOCKET_ERROR || nRet == 0)
                     {
@@ -345,7 +371,7 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
 
 int main(int argc, char** argv)
 {
-    PRINT_ERROR("Tun used as 'lfrpTun -p ListenPort', default is 'lfrpTun -p %d'\n ", nPort);
+    PRINT_ERROR("Tun used as 'lfrpTun -p ListenPort -k AESKey', default is 'lfrpTun -p %d -k %s'\n ", nPort, strAesKey.c_str());
     int i = 0;
     for (i = 0; i < argc; i++)
     {
@@ -359,7 +385,15 @@ int main(int argc, char** argv)
             i++;
             nPort = atoi(argv[i]);
         }
+        else if (strcmp(argv[i], "-k") == 0 && i + 1 <= argc)
+        {
+            i++;
+            strAesKey = argv[i];
+        }
     }
+
+    // 初始化AES密钥信息
+    CAES::GlobalInit(strAesKey.c_str());
 
     int nStartup = 0;
     struct sockaddr_in clientService;
@@ -465,3 +499,4 @@ int main(int argc, char** argv)
         }
     }
 }
+

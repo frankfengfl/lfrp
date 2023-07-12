@@ -8,6 +8,7 @@
 #include <map>
 #include <vector>
 #include "../global.h"
+#include "../aes.h"
 
 #pragma comment(lib,"ws2_32.lib")
 
@@ -21,10 +22,13 @@ int nSvrPort = 3389;
 
 // 通道服务信息
 std::string strTun = "127.0.0.1"; 
-int nTunPort = 8611;
+int nTunPort = 6868;
 
 // 远端服务信息
 int nServerNumber = 1;
+
+// AES key
+std::string strAesKey = "asdf1234567890";
 
 // 业务服务连接失败，需要通知client侧清掉这条连接
 void DoBusSocketErr(CLfrpSocket* pSocket, CLfrpSocket* pTunSocket)
@@ -220,14 +224,26 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                 GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
                 PRINT_INFO("Svr %s,%d: Tun send socketID %d pack to TunSvr size %d seq %d\n ", __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
+                // 发送前加密
+                char* pSendBuffer = buf.pBuffer;
+                int nSendLen = buf.nLen;
+#ifdef USE_AES
+                CAES cAes;
+                pSendBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nSendLen, true);
+#endif
+
                 //开始send
-                nRet = send(pTunSocket->sock, buf.pBuffer, buf.nLen, 0);
+                nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, 0);
                 while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-                {
-                    PRINT_ERROR("Svr %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, buf.nLen);
+                { // 缓冲区堵塞等一下重发
+                    PRINT_ERROR("Svr %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, nSendLen);
                     Sleep(1);
                     nRet = send(pTunSocket->sock, buf.pBuffer, buf.nLen, 0);
                 }
+#ifdef USE_AES
+                delete[] pSendBuffer;
+#endif
+                delete[] buf.pBuffer;
                 //事实上，这里可能会有nRet小于bufLen的情况
                 if (nRet == SOCKET_ERROR || nRet == 0)
                 {
@@ -274,7 +290,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                         //开始send
                         nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, 0);
                         while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-                        {
+                        { // 缓冲区堵塞等一下重发
                             PRINT_ERROR("Svr %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, buf.nLen - PACK_SIZE_DATA);
                             Sleep(1);
                             nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, 0);
@@ -291,6 +307,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                             break; // socket异常不发剩余数据
                         }
                     }
+                    delete[] buf.pBuffer;
                 }
                 pSocket->vecSendBuf.clear();
                 pSocket->Op = OP_READ;
@@ -334,7 +351,8 @@ void SendTunLogin(CLfrpSocket* pTunSocket)
 
 int main(int argc, char** argv)
 {
-    PRINT_ERROR("Cli used as 'lfrpSvr -th tunHost -tp tunPort -sh LocalServerHost -sp LocalServerPort', default is 'lfrpSvr -th %s -tp %d -sh %s -sp %d'\n ", strTun.c_str(), nTunPort, strSvr.c_str(), nSvrPort);
+    PRINT_ERROR("Cli used as 'lfrpSvr -th tunHost -tp tunPort -sh LocalServerHost -sp LocalServerPort -k AESKey', default is 'lfrpSvr -th %s -tp %d -sh %s -sp %d -k %s'\n ", \
+        strTun.c_str(), nTunPort, strSvr.c_str(), nSvrPort, strAesKey.c_str());
     int i = 0;
     for (i = 0; i < argc; i++)
     {
@@ -358,7 +376,16 @@ int main(int argc, char** argv)
             i++;
             nSvrPort = atoi(argv[i]);
         }
+        else if (strcmp(argv[i], "-k") == 0 && i + 1 <= argc)
+        {
+            i++;
+            strAesKey = argv[i];
+        }
     }
+
+    // 初始化AES密钥信息
+    CAES::GlobalInit(strAesKey.c_str());
+
     int nStartup = 0;
     struct sockaddr_in clientService;
     WSADATA wsaData;
@@ -430,6 +457,12 @@ int main(int argc, char** argv)
 
             //if (nRet == -1)
             {
+                // 没有业务，释放CPU
+                if (!bSetFD)
+                {
+                    Sleep(1);
+                }
+
                 unsigned int uTick = GetTickCount();
                 // 通道连接失败要重连
                 if (sockTun.sock == INVALID_SOCKET && uTick - uLastTunTick > 5 * 1000)
