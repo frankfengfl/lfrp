@@ -44,6 +44,11 @@ int ParsePackHeader(CLfrpSocket* pSocket)
                 pSocket->nType = pStream[1];
                 pSocket->nPackLen = pStream[2];
             }
+            else
+            {
+                // 公网上会有网络扫描，类似Cookie: mstshash = Administr
+                return -110;
+            }
         }
     }
 
@@ -217,7 +222,15 @@ int LfrpRecv(CLfrpSocket* pSocket)
                                 pData += PACK_SIZE_HEADER;
                                 nDataLen -= PACK_SIZE_HEADER;
                             }
-                            ParsePackHeader(pSocket);
+                            int nParseRet = ParsePackHeader(pSocket);
+                            if (nParseRet < 0)
+                            {
+                                // 如果是非法包，长度不够到这里10s还没收到认证包会断开，长度足够进入这个逻辑需要跳出
+                                PRINT_ERROR("%s,%d: receive illegal Pack size %d\n ", __FUNCTION__, __LINE__, nRet);
+                                delete[] pDec;
+                                delete[] pBuf;
+                                return nParseRet;
+                            }
 
                             int nBufLen = 0;
                             int nPackLen = 0;
@@ -274,7 +287,12 @@ int LfrpRecv(CLfrpSocket* pSocket)
         AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, Buffer, nRet);
 #endif
 
-        ParsePackHeader(pSocket);
+        // 非AES加密的首个包在这里解析
+        int nParseRet = ParsePackHeader(pSocket);
+        if (nParseRet < 0)
+        {
+            return nParseRet;
+        }
     }
     return nRet;
 }
