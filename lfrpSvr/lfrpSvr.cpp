@@ -25,7 +25,7 @@ std::string strTun = "127.0.0.1";
 int nTunPort = 6868;
 
 // 远端服务信息
-int nServerNumber = 1;
+int nServiceNumber = 1;
 
 // AES key
 std::string strAesKey = "asdf1234567890";
@@ -44,7 +44,7 @@ void DoBusSocketErr(CLfrpSocket* pSocket, CLfrpSocket* pTunSocket)
     }
 }
 
-int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
+int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapBusinessSvr, fd_set& fdRead)
 {
     int nFunRet = 0;
     int nRet = 0;
@@ -56,7 +56,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
             PRINT_ERROR("Svr %s,%d: Tun SocketID %d disconnect because read err %d wsaerr %x\n ", __FUNCTION__, __LINE__, pTunSocket->sock, nRet, WSAGetLastError());
             CloseLfrpSocket(pTunSocket);
             // 通道关闭，所有业务服务连接清掉
-            for (CSocketMap::iterator iter = mapSvr.begin(); iter != mapSvr.end(); iter++)
+            for (CSocketMap::iterator iter = mapBusinessSvr.begin(); iter != mapBusinessSvr.end(); iter++)
             {
                 if (iter->second->sock != INVALID_SOCKET)
                 {
@@ -65,7 +65,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
                     delete iter->second;
                 }
             }
-            mapSvr.clear();
+            mapBusinessSvr.clear();
             nFunRet = -1;
         }
         else
@@ -77,14 +77,14 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
                 if (pTunSocket->nType == PACK_TYPE_DATA_BEG)
                 {
                     CLfrpSocket* pSocket = new CLfrpSocket;
-                    CSocketMap::iterator iter = mapSvr.find(pTunSocket->nSocketID);
-                    if (iter != mapSvr.end())
+                    CSocketMap::iterator iter = mapBusinessSvr.find(pTunSocket->nSocketID);
+                    if (iter != mapBusinessSvr.end())
                     {
                         PRINT_ERROR("Svr %s,%d: Svr SocketID %d disconnect because the same sockeID send DataBeg\n ", __FUNCTION__, __LINE__, iter->second->sock);
                         // 相同Client侧SocketID还有业务连接，正常是客户端复用SocketID，而本服务未清除
                         CloseLfrpSocket(iter->second);
                         delete iter->second;
-                        mapSvr.erase(iter);
+                        mapBusinessSvr.erase(iter);
                     }
 
                     // 新的Client连接过来，配套一条连到业务服务
@@ -98,7 +98,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
                     else
                     {
                         pSocket->nSocketID = pTunSocket->nSocketID;
-                        mapSvr.insert(std::make_pair(pSocket->nSocketID, pSocket));
+                        mapBusinessSvr.insert(std::make_pair(pSocket->nSocketID, pSocket));
                     }
 
                     // 取掉起始包
@@ -106,15 +106,15 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
                 }
                 else if (pTunSocket->nType == PACK_TYPE_DATA_END)
                 { // 客户端断开
-                    CSocketMap::iterator iter = mapSvr.find(pTunSocket->nSocketID);
-                    if (iter != mapSvr.end())
+                    CSocketMap::iterator iter = mapBusinessSvr.find(pTunSocket->nSocketID);
+                    if (iter != mapBusinessSvr.end())
                     {
                         PRINT_ERROR("Svr %s,%d: Svr SocketID %d disconnect because Cli send DataEnd\n ", __FUNCTION__, __LINE__, iter->second->sock);
                         // 客户侧断开，也要同时断开业务侧连接
                         RemoveSeqKey(iter->second->sock);  // 客户端断开，从map中删除
                         CloseLfrpSocket(iter->second);
                         delete iter->second;
-                        mapSvr.erase(iter);
+                        mapBusinessSvr.erase(iter);
                     }
 
                     // 取掉结束包
@@ -122,8 +122,8 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
                 }
                 else if (pTunSocket->nType > PACK_TYPE_DATA_BEG && pTunSocket->nType <= PACK_TYPE_DATA_END)
                 {
-                    CSocketMap::iterator iter = mapSvr.find(pTunSocket->nSocketID);
-                    if (iter != mapSvr.end())
+                    CSocketMap::iterator iter = mapBusinessSvr.find(pTunSocket->nSocketID);
+                    if (iter != mapBusinessSvr.end())
                     {
                         if (MoveSendPack(pTunSocket, iter->second))
                         {
@@ -133,12 +133,12 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
                 }
                 else if (pTunSocket->nType == PACK_TYPE_TUN_END)
                 { // 客户端通道整个断开，清掉所有相关业务连接
-                    for (CSocketMap::iterator iter = mapSvr.begin(); iter != mapSvr.end(); iter++)
+                    for (CSocketMap::iterator iter = mapBusinessSvr.begin(); iter != mapBusinessSvr.end(); iter++)
                     {
                         CloseLfrpSocket(iter->second);
                         delete iter->second;
                     }
-                    mapSvr.clear();
+                    mapBusinessSvr.clear();
 
                     // 取掉结束包
                     DropOnePack(pTunSocket);
@@ -148,7 +148,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
     }
 
     CSocketVec vecDelSocket;
-    for (CSocketMap::iterator iter = mapSvr.begin(); iter != mapSvr.end(); iter++)
+    for (CSocketMap::iterator iter = mapBusinessSvr.begin(); iter != mapBusinessSvr.end(); iter++)
     {
         CLfrpSocket* pSocket = iter->second;
         if (pSocket->sock != INVALID_SOCKET)
@@ -193,11 +193,11 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdRead)
     {
         if (vecDelSocket[i])
         {
-            for (CSocketMap::iterator iter = mapSvr.begin(); iter != mapSvr.end(); iter++)
+            for (CSocketMap::iterator iter = mapBusinessSvr.begin(); iter != mapBusinessSvr.end(); iter++)
             {
                 if (vecDelSocket[i] == iter->second)
                 {
-                    mapSvr.erase(iter);
+                    mapBusinessSvr.erase(iter);
                     break;
                 }
             }
@@ -233,12 +233,25 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
 #endif
 
                 //开始send
+#ifdef _WIN32
                 nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, 0);
+#else
+                nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
+#endif
+
+#ifdef _WIN32
                 while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
+#else
+                while (nRet == SOCKET_ERROR && (WSAGetLastError() == EAGAIN || WSAGetLastError() == EWOULDBLOCK || WSAGetLastError() == EINTR))
+#endif
                 { // 缓冲区堵塞等一下重发
                     PRINT_ERROR("Svr %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, nSendLen);
                     Sleep(1);
-                    nRet = send(pTunSocket->sock, buf.pBuffer, buf.nLen, 0);
+#ifdef _WIN32
+                    nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, 0);
+#else
+                    nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
+#endif
                 }
 #ifdef USE_AES
                 delete[] pSendBuffer;
@@ -288,12 +301,25 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                         PRINT_INFO("Svr %s,%d: Server send socketID %d pack to Bussiness size %d seq %d\n ", __FUNCTION__, __LINE__, nSocketID, buf.nLen - PACK_SIZE_DATA, nSeq);
 
                         //开始send
+#ifdef _WIN32
                         nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, 0);
+#else
+                        nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, MSG_NOSIGNAL);
+#endif
+
+#ifdef _WIN32
                         while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
+#else
+                        while (nRet == SOCKET_ERROR && (WSAGetLastError() == EAGAIN || WSAGetLastError() == EWOULDBLOCK || WSAGetLastError() == EINTR))
+#endif
                         { // 缓冲区堵塞等一下重发
                             PRINT_ERROR("Svr %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, buf.nLen - PACK_SIZE_DATA);
                             Sleep(1);
+#ifdef _WIN32
                             nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, 0);
+#else
+                            nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, MSG_NOSIGNAL);
+#endif
                         }
                         //事实上，这里可能会有nRet小于bufLen的情况
                         if (nRet == SOCKET_ERROR || nRet == 0)
@@ -344,15 +370,15 @@ void SendTunLogin(CLfrpSocket* pTunSocket)
     pData[0] = MAGIC_NUMBER;
     pData[1] = PACK_TYPE_AUTH_SERVER;
     pData[2] = PACK_SIZE_AUTH;
-    pData[3] = nServerNumber;
+    pData[3] = nServiceNumber;
     pTunSocket->vecSendBuf.push_back(buf);
     pTunSocket->Op = OP_WRITE;
 }
 
 int main(int argc, char** argv)
 {
-    PRINT_ERROR("Cli used as 'lfrpSvr -th tunHost -tp tunPort -sh LocalServerHost -sp LocalServerPort -k AESKey', default is 'lfrpSvr -th %s -tp %d -sh %s -sp %d -k %s'\n ", \
-        strTun.c_str(), nTunPort, strSvr.c_str(), nSvrPort, strAesKey.c_str());
+    PRINT_ERROR("Cli used as 'lfrpSvr -th tunHost -tp tunPort -sh LocalServerHost -sp LocalServerPort -sn ServiceNumber -k AESKey', default is 'lfrpSvr -th %s -tp %d -sh %s -sp %d -sn %d -k %s'\n ", \
+        strTun.c_str(), nTunPort, strSvr.c_str(), nSvrPort, nServiceNumber, strAesKey.c_str());
     int i = 0;
     for (i = 0; i < argc; i++)
     {
@@ -381,6 +407,11 @@ int main(int argc, char** argv)
             i++;
             strAesKey = argv[i];
         }
+        else if (strcmp(argv[i], "-sn") == 0 && i + 1 <= argc)
+        {
+            i++;
+            nServiceNumber = atoi(argv[i]);
+        }
     }
 
     // 初始化AES密钥信息
@@ -388,16 +419,17 @@ int main(int argc, char** argv)
 
     int nStartup = 0;
     struct sockaddr_in clientService;
-    WSADATA wsaData;
     SOCKET sockListen = INVALID_SOCKET;
     int nRet = 0;
-    //保存所有的客户端、服务端的SOCKET信息
+#ifdef _WIN32
+    WSADATA wsaData;
     if (0 != (nStartup = WSAStartup(MAKEWORD(2, 2), &wsaData)))
     {
         WSASetLastError(nStartup); //WSAStartup不会自动设置错误代码
         Print_ErrCode("WSAStartup()");
         return 1;
     }
+#endif
 
     CLfrpSocket sockTun;
     CSocketMap mapSvr;
@@ -411,19 +443,21 @@ int main(int argc, char** argv)
         SendTunLogin(&sockTun);
     }
     
-    unsigned int uLastTunTick = GetTickCount();
+    unsigned int uLastTunSec = GetCurSecond();
     while (true)
     {
         //循环判断是否有请求需要处理
         fd_set fdRead, fdWrite;
         while (true)
         {
+            SOCKET maxSock = 0;
             bool bSetFD = false;
             FD_ZERO(&fdRead);
             FD_ZERO(&fdWrite);
             if (sockTun.sock != INVALID_SOCKET)
             {
                 LfrpSetFD(&sockTun, fdRead, fdWrite);
+                maxSock = max(maxSock, sockTun.sock);
                 bSetFD = true;
             }
             for (CSocketMap::iterator iter = mapSvr.begin(); iter != mapSvr.end(); iter++)
@@ -432,6 +466,7 @@ int main(int argc, char** argv)
                 if (pSocket && pSocket->sock != INVALID_SOCKET)
                 {
                     LfrpSetFD(pSocket, fdRead, fdWrite);
+                    maxSock = max(maxSock, pSocket->sock);
                     bSetFD = true;
                 }
             }
@@ -439,13 +474,21 @@ int main(int argc, char** argv)
             if (bSetFD)
             {
                 //这个操作会被阻塞
+#ifdef _WIN32
                 nRet = select(0, &fdRead, &fdWrite, NULL, NULL);
+#else
+                nRet = select(maxSock+ + 1, &fdRead, &fdWrite, NULL, NULL);
+#endif
                 //其他socket可用了，判断哪些能读，哪些能写
+#ifdef _WIN32
                 if (fdRead.fd_count > 0)
+#endif
                 {
                     nRet = ProcessRead(&sockTun, mapSvr, fdRead);
                 }
+#ifdef _WIN32
                 if (fdWrite.fd_count > 0)
+#endif
                 {
                     nRet |= ProcessWrite(&sockTun, mapSvr, fdWrite);
                 }
@@ -463,9 +506,9 @@ int main(int argc, char** argv)
                     Sleep(1);
                 }
 
-                unsigned int uTick = GetTickCount();
+                unsigned int uSec = GetCurSecond();
                 // 通道连接失败要重连
-                if (sockTun.sock == INVALID_SOCKET && uTick - uLastTunTick > 5 * 1000)
+                if (sockTun.sock == INVALID_SOCKET && uSec - uLastTunSec > 5)
                 {
                     PRINT_ERROR("Cli %s,%d: ConnectSocket %s:%d\n ", __FUNCTION__, __LINE__, strTun.c_str(), nTunPort);
                     if (ConnectSocket(&sockTun.sock, strTun.c_str(), nTunPort) != 0)
@@ -477,7 +520,7 @@ int main(int argc, char** argv)
                     {
                         SendTunLogin(&sockTun);
                     }
-                    uLastTunTick = uTick;
+                    uLastTunSec = uSec;
                 }
                 
             }

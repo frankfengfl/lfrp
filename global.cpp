@@ -9,8 +9,14 @@
 #include <vector>
 #include "global.h"
 #include "aes.h"
+#ifndef _WIN32
+#include<sys/time.h>	
+int geterror() { return errno; }
+#endif
 
+#ifdef _WIN32
 #pragma comment(lib,"ws2_32.lib")
+#endif
 
 void LfrpSetFD(CLfrpSocket* pSocket, fd_set& fdRead, fd_set& fdWrite)
 {
@@ -46,7 +52,7 @@ int ParsePackHeader(CLfrpSocket* pSocket)
         if (pSocket->nBufLen >= PACK_SIZE_AUTH)
         {
             int* pStream = (int*)GetSocketBuffer(pSocket);
-            pSocket->nServerNumber = pStream[3];
+            pSocket->nServiceNumber = pStream[3];
         }
     }
     else if (pSocket->nType >= PACK_TYPE_DATA_BEG && pSocket->nType <= PACK_TYPE_DATA_END)
@@ -206,7 +212,7 @@ int LfrpRecv(CLfrpSocket* pSocket)
                         {
                             if (bAddHeader)
                             { // 原先不够，拷贝包头大小过去解析，否则如果原先有头信息了，不需要拷贝节省性能
-                                PRINT_INFO("%s,%d: Add header size %d\n ", __FUNCTION__, __LINE__, PACK_SIZE_HEADER);
+                                //PRINT_INFO("%s,%d: Add header size %d\n ", __FUNCTION__, __LINE__, PACK_SIZE_HEADER);
                                 AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pData, PACK_SIZE_HEADER);
                                 pData += PACK_SIZE_HEADER;
                                 nDataLen -= PACK_SIZE_HEADER;
@@ -220,13 +226,13 @@ int LfrpRecv(CLfrpSocket* pSocket)
                             if (nBufLen + nDataLen > nPackLen)
                             { // 如果包收全了，解码包里才会有补码，跳过补码
                                 int nFillLen = ((nPackLen + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE) * AES_BLOCK_SIZE - nPackLen;
-                                PRINT_INFO("%s,%d: aes fill size %d\n ", __FUNCTION__, __LINE__, nFillLen);
+                                //PRINT_INFO("%s,%d: aes fill size %d\n ", __FUNCTION__, __LINE__, nFillLen);
                                 //if (nFillLen)
                                 {
                                     int nRPackLen = nPackLen - nBufLen; // 剩余包大小是整个包大小减去已经移到Buffer里的
                                     if (nRPackLen > 0)
                                     { // 剩余包还有内容，先填入
-                                        PRINT_INFO("%s,%d: Add nRPackLen size %d\n ", __FUNCTION__, __LINE__, nRPackLen);
+                                        //PRINT_INFO("%s,%d: Add nRPackLen size %d\n ", __FUNCTION__, __LINE__, nRPackLen);
                                         AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pData, nRPackLen);
                                     }
                                     pData = pData + nRPackLen + nFillLen;
@@ -242,7 +248,7 @@ int LfrpRecv(CLfrpSocket* pSocket)
                                 // 如果包还没收全或正好收全，不会碰到补码，直接添加
                                 if (nDataLen)
                                 {
-                                    PRINT_INFO("%s,%d: Add rest nDataLen size %d\n ", __FUNCTION__, __LINE__, nDataLen);
+                                    //PRINT_INFO("%s,%d: Add rest nDataLen size %d\n ", __FUNCTION__, __LINE__, nDataLen);
                                     AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pData, nDataLen);
                                     nDataLen = 0;
                                 }
@@ -357,7 +363,14 @@ void MakeTunEndPack(CBuffer& buf)
 
 void CloseLfrpSocket(CLfrpSocket* pSocket)
 {
+    if (pSocket == nullptr)
+        return;
+    PRINT_ERROR("%s,%d: close socketID %d\n ", __FUNCTION__, __LINE__, pSocket->sock);
+#ifdef _WIN32
     closesocket(pSocket->sock);
+#else
+    close(pSocket->sock);
+#endif
     pSocket->ClearBuffer();
     pSocket->sock = INVALID_SOCKET;
 }
@@ -419,7 +432,7 @@ void GetInfoFromBuf(CBuffer& buf, int& nType, int& nLen, int& nSocketID, int& nS
         {
             if (nLen >= PACK_SIZE_AUTH)
             {
-                int nServerNumber = pData[3];
+                int nServiceNumber = pData[3];
             }
         }
         else if (nType >= PACK_TYPE_DATA_BEG && nType <= PACK_TYPE_DATA_END)
@@ -485,14 +498,22 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
         PRINT_ERROR("%s,%d: connect socket %s:%d setopt TCP_NODELAY error\n ", __FUNCTION__, __LINE__, pIPAddress, nPort);
     }
     
-    SOCKADDR_IN addrSrv;
+    sockaddr_in addrSrv;
+#ifdef _WIN32
     addrSrv.sin_addr.S_un.S_addr = inet_addr(pIPAddress);
+#else
+    addrSrv.sin_addr.s_addr = inet_addr(pIPAddress);
+#endif
     addrSrv.sin_family = AF_INET;
     addrSrv.sin_port = htons(nPort);
 
     /* 非阻塞式连接 */
+#ifdef _WIN32
     unsigned long mode = 1;
     int iRet = ioctlsocket(*pSocket, FIONBIO, &mode);
+#else
+    int iRet = fcntl(*pSocket, F_SETFL, O_NONBLOCK);
+#endif
     if (iRet != NO_ERROR)
     {
         PRINT_ERROR("%s,%d: connect socket %s:%d ioctlsocket error %d\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, iRet);
@@ -500,14 +521,18 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
     
     int conn_ret = connect(*pSocket, (sockaddr*)&addrSrv, sizeof(sockaddr));
 
+#ifdef _WIN32
     mode = 0;
     iRet = ioctlsocket(*pSocket, FIONBIO, &mode);
+#else
+    iRet = fcntl(*pSocket, F_SETFL, (fcntl(*pSocket, F_GETFL, 0) & ~O_NONBLOCK));
+#endif
     if (iRet != NO_ERROR)
     {
         PRINT_ERROR("%s,%d: connect socket %s:%d ioctlsocket error %d\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, iRet);
     }
 
-    TIMEVAL timeval = { 0 };
+    timeval timeval = { 0 };
     timeval.tv_sec = 0;
     timeval.tv_usec = 950 * 1000;
 
@@ -524,12 +549,29 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
     }
     else
     {
+#ifdef _WIN32
         closesocket(*pSocket);
+#else
+        close(*pSocket);
+#endif
         pSocket = nullptr;
         return -3;
     }
 }
 
+unsigned int GetCurSecond()
+{
+#ifdef _WIN32
+    return (unsigned int)GetTickCount() / 1000;
+#else
+    struct timeval tm;
+    float timeuse;
+    gettimeofday(&tm, NULL);
+    return tm.tv_sec;
+#endif
+}
+
+#ifdef _WIN32
 std::string GetCurTimeStr()
 {
     // 获取当前系统时间
@@ -544,3 +586,4 @@ std::string GetCurTimeStr()
 
     return timeString;
 }
+#endif

@@ -140,20 +140,27 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
                     //pSocket->Op = OP_WRITE;
                     if (pSocket->nType == PACK_TYPE_AUTH_SERVER)
                     {
-                        iterSockets iter = mapSocketPair.find(pSocket->nServerNumber);
+                        iterSockets iter = mapSocketPair.find(pSocket->nServiceNumber);
                         if (iter != mapSocketPair.end())
                         {  // 业务Number有在用，因为整对关掉，不需要通知，Server和Vistor两端断开会清理
-                            CloseLfrpSocket(iter->second.pServer);
-                            CloseLfrpSocket(iter->second.pVistor);
-                            delete iter->second.pServer;
-                            delete iter->second.pVistor;
+                            if (iter->second.pServer)
+                            {
+                                CloseLfrpSocket(iter->second.pServer);
+                                delete iter->second.pServer;
+                            }
+                            if (iter->second.pVistor)
+                            {
+                                CloseLfrpSocket(iter->second.pVistor);
+                                delete iter->second.pVistor;
+                            }
+                            
                             mapSocketPair.erase(iter);
                         }
 
                         CSocketPair pair;
                         pair.pServer = pSocket;
                         pair.pVistor = nullptr;
-                        mapSocketPair.insert(std::make_pair(pSocket->nServerNumber, pair));
+                        mapSocketPair.insert(std::make_pair(pSocket->nServiceNumber, pair));
 
                         // 取掉认证包
                         char* pBuffer = new char[pSocket->nPackLen];
@@ -162,7 +169,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
                     }
                     else if (pSocket->nType == PACK_TYPE_AUTH_VISTOR)
                     {
-                        iterSockets iter = mapSocketPair.find(pSocket->nServerNumber);
+                        iterSockets iter = mapSocketPair.find(pSocket->nServiceNumber);
                         if (iter == mapSocketPair.end())
                         {
                             PRINT_ERROR("Tun %s,%d: new SocketID %d disconnect because no server number find\n ", __FUNCTION__, __LINE__, pSocket->sock);
@@ -258,12 +265,25 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                     pSendBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nSendLen, true);
 #endif
                     //开始send
+#ifdef _WIN32
                     nRet = send(pair.pServer->sock, pSendBuffer, nSendLen, 0);
+#else
+                    nRet = send(pair.pServer->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
+#endif
+
+#ifdef _WIN32
                     while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
+#else
+                    while (nRet == SOCKET_ERROR && (WSAGetLastError() == EAGAIN || WSAGetLastError() == EWOULDBLOCK || WSAGetLastError() == EINTR))
+#endif
                     { // 缓冲区堵塞等一下重发
                         PRINT_ERROR("Tun %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, nSendLen);
                         Sleep(1);
-                        nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, 0);
+#ifdef _WIN32
+                        nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, 0);
+#else
+                        nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
+#endif
                     }
 #ifdef USE_AES
                     delete[] pSendBuffer;
@@ -313,12 +333,25 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                     pSendBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nSendLen, true);
 #endif
                     //开始send
+#ifdef _WIN32
                     nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, 0);
+#else
+                    nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
+#endif
+
+#ifdef _WIN32
                     while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
+#else
+                    while (nRet == SOCKET_ERROR && (WSAGetLastError() == EAGAIN || WSAGetLastError() == EWOULDBLOCK || WSAGetLastError() == EINTR))
+#endif
                     { // 缓冲区堵塞等一下重发
                         PRINT_ERROR("Tun %s,%d: send to Vistor err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, nSendLen);
                         Sleep(1);
-                        nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, 0);
+#ifdef _WIN32
+                        nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, 0);
+#else
+                        nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
+#endif
                     }
 #ifdef USE_AES
                     delete[] pSendBuffer;
@@ -397,16 +430,17 @@ int main(int argc, char** argv)
 
     int nStartup = 0;
     struct sockaddr_in clientService;
-    WSADATA wsaData;
     SOCKET sockListen = INVALID_SOCKET;
     int nRet = 0;
-    //保存所有的客户端、服务端的SOCKET信息
+#ifdef _WIN32
+    WSADATA wsaData;
     if (0 != (nStartup = WSAStartup(MAKEWORD(2, 2), &wsaData)))
     {
         WSASetLastError(nStartup); //WSAStartup不会自动设置错误代码
         Print_ErrCode("WSAStartup()");
         return 1;
     }
+#endif
     clientService.sin_family = AF_INET;
     //clientService.sin_addr.s_addr = inet_addr(strHost.c_str());
     clientService.sin_addr.s_addr = htonl(INADDR_ANY);  // 通道服务不限制
@@ -418,21 +452,33 @@ int main(int argc, char** argv)
         Print_ErrCode("socket()");
         return 1;
     }
+#ifdef _WIN32
     u_long type = 1;
     ioctlsocket(sockListen, FIONBIO, &type);
+#else
+    fcntl(sockListen, F_SETFL, O_NONBLOCK);
+#endif
     if (SOCKET_ERROR == bind(sockListen,
-        (SOCKADDR*)&clientService,
+        (sockaddr*)&clientService,
         sizeof(clientService)
     ))
     {
         Print_ErrCode("bind()");
+#ifdef _WIN32
         closesocket(sockListen);
+#else
+        close(sockListen);
+#endif
         return 1;
     }
     if (SOCKET_ERROR == listen(sockListen, DEFAULT_BACKLOG))
     {
         Print_ErrCode("listen()");
+#ifdef _WIN32
         closesocket(sockListen);
+#else
+        close(sockListen);
+#endif
     }
     printf("[Server]监听 %s:%d\n", strHost.c_str(), nPort);    //存放所有的socket，包括用于accept的socket。
     CLfrpSocket sListen;
@@ -446,6 +492,7 @@ int main(int argc, char** argv)
             FD_ZERO(&fdRead);
             FD_ZERO(&fdWrite);
             FD_SET(sListen.sock, &fdRead);
+            SOCKET maxSock = sListen.sock;
             for (iterSockets iter = mapSocketPair.begin(); iter != mapSocketPair.end(); iter++)
             {
                 CSocketPair pair = iter->second;
@@ -453,22 +500,53 @@ int main(int argc, char** argv)
                 if (pair.pServer && pair.pServer->sock != INVALID_SOCKET)
                 {
                     LfrpSetFD(pair.pServer, fdRead, fdWrite);
+                    maxSock = max(maxSock, pair.pServer->sock);
                 }
                 if (pair.pVistor && pair.pVistor->sock != INVALID_SOCKET)
                 {
                     LfrpSetFD(pair.pVistor, fdRead, fdWrite);
+                    maxSock = max(maxSock, pair.pVistor->sock);
                 }
             }
+
+            CSocketVec vecDelSocket;
             for (int i = 0; i < vecSocket.size(); i++)
             {
                 if (vecSocket[i] && vecSocket[i]->sock != INVALID_SOCKET)
                 {
-                    LfrpSetFD(vecSocket[i], fdRead, fdWrite);
+                    unsigned int nTime = GetCurSecond();
+                    if (nTime - vecSocket[i]->nAcceptSec > 10)
+                    { // 如果超过10秒还没发送包头，可能是非法连接，断开
+                        vecDelSocket.push_back(vecSocket[i]);
+                        CloseLfrpSocket(vecSocket[i]);
+                    }
+                    else
+                    {
+                        LfrpSetFD(vecSocket[i], fdRead, fdWrite);
+                        maxSock = max(maxSock, vecSocket[i]->sock);
+                    }
+                }
+            }
+
+            for (int i = 0; i < vecDelSocket.size(); i++)
+            {
+                for (CSocketVec::iterator iter = vecSocket.begin(); iter != vecSocket.end(); iter++)
+                {
+                    if (vecDelSocket[i] == *iter)
+                    {
+                        delete vecDelSocket[i];
+                        vecSocket.erase(iter);
+                        break;
+                    }
                 }
             }
 
             //这个操作会被阻塞
+#ifdef _WIN32
             nRet = select(0, &fdRead, &fdWrite, NULL, NULL);
+#else
+            nRet = select(maxSock + 1, &fdRead, &fdWrite, NULL, NULL);
+#endif
             if (FD_ISSET(sockListen, &fdRead))
             {
                 //socket可用了，这时accept一定会立刻返回成功或失败 这里需要处理最大连接数
@@ -481,18 +559,24 @@ int main(int argc, char** argv)
                         PRINT_ERROR("Tun %s,%d: accept socket setopt TCP_NODELAY error\n ", __FUNCTION__, __LINE__);
                     }
 
+                    PRINT_ERROR("Tun %s,%d: accept new socketID %d\n ", __FUNCTION__, __LINE__, sockNewClient);
                     CLfrpSocket* pSocket = new CLfrpSocket;
                     pSocket->sock = sockNewClient;
                     pSocket->Op = OP_READ;
+                    pSocket->nAcceptSec = GetCurSecond();
                     vecSocket.push_back(pSocket);
                 }
             }
             //其他socket可用了，判断哪些能读，哪些能写
+#ifdef _WIN32
             if (fdRead.fd_count > 0)
+#endif
             {
                 ProcessRead(mapSocketPair, fdRead);
             }
+#ifdef _WIN32            
             if (fdWrite.fd_count > 0)
+#endif
             {
                 ProcessWrite(mapSocketPair, fdWrite);
             }

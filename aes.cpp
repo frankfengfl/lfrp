@@ -1,4 +1,8 @@
-﻿#include <algorithm>
+﻿#ifndef _WIN32
+#include <unistd.h>
+#include <string.h>
+#endif
+#include <algorithm>
 #include <fstream>
 #include "aes.h"
 

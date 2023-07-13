@@ -7,14 +7,41 @@
 #include <string.h>
 #include <map>
 #include <vector>
+#ifdef _WIN32
 #include <winsock2.h>
+#else
+#include <sys/types.h>      
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netinet/tcp.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+
+typedef int SOCKET;
+typedef unsigned int DWORD;
+typedef unsigned char BYTE;
+#define FALSE 0 
+#define SOCKET_ERROR (-1) 
+#define INVALID_SOCKET (SOCKET)(~0)
+#define NO_ERROR    0
+
+extern int geterror();
+#define WSAGetLastError() geterror()
+#define Sleep   sleep
+#define max(a,b)            (((a) > (b)) ? (a) : (b))
+#define nullptr     0
+#endif
 
 /*******************************************************
 * 1.本程序为专用AES，只用一个全局key加密
 * 2.本程序一律采用fill模式，解包时自动按填充的折算
 * 3.本程序跟lfrpTun相关的数据流完全加密，不留数据头，避免被检测头
 ********************************************************/
+#ifdef _WIN32
 #define USE_AES
+#endif
 
 #define LOCAL_IP "127.0.0.1"
 #define DEFAULT_BACKLOG 5
@@ -92,9 +119,10 @@ public:
         pBuffer = nullptr;
         nBufAlloc = 0;
         nPackLen = 0;
-        nServerNumber = -1;
+        nServiceNumber = -1;
         nSocketID = INVALID_SOCKET;
         nPackSeq = 0;
+        nAcceptSec = 0;
         memset(Buffer, 0, ELEM_BUFFER_SIZE);
     }
 
@@ -122,7 +150,7 @@ public:
         nType = PACK_TYPE_UNKNOW;
         nBufLen = 0;
         nPackLen = 0;
-        nServerNumber = -1;
+        nServiceNumber = -1;
         nSocketID = INVALID_SOCKET;
         nPackSeq = 0;
         memset(Buffer, 0, ELEM_BUFFER_SIZE);
@@ -132,7 +160,7 @@ public:
     SOCKET sock;
     DWORD Op;
     int nMagicNum;
-    int nServerNumber;          // 服务提供编号，用于区分Business侧提供的服务，认证包带
+    int nServiceNumber;          // 服务提供编号，用于区分Business侧提供的服务，认证包带
     int nSocketID;              // 业务客户端建立的SocketID，PACK_TYPE_DATA_BEG包带，通道Elem是临时存下
     int nPackSeq;               // 为每个SocketID连接
 
@@ -146,6 +174,8 @@ public:
 
     //发送队列
     CVecBuffer vecSendBuf;
+
+    unsigned int nAcceptSec;
 
 #ifdef USE_AES
     char EncBuffer[ELEM_BUFFER_SIZE];
@@ -216,6 +246,9 @@ void GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen);
 // 连接socket封装
 int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort);
 
+unsigned int GetCurSecond();
+#ifdef _WIN32
 // 准备给日志使用
 std::string GetCurTimeStr();    
+#endif
 #endif

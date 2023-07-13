@@ -5,8 +5,31 @@
 #include <stdio.h>
 #include <iostream>
 #include <string.h>
+#ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib,"ws2_32.lib")
+#else
+#include <sys/types.h>      
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+
+typedef int SOCKET;
+typedef unsigned int DWORD;
+typedef unsigned char BYTE;
+#define FALSE 0 
+#define SOCKET_ERROR (-1) 
+#define INVALID_SOCKET (SOCKET)(~0)
+#define NO_ERROR    0
+
+int geterror() { return errno; }
+#define WSAGetLastError() geterror()
+#define closesocket close
+#define max(a,b)            (((a) > (b)) ? (a) : (b))
+#endif
 
 #define IP "127.0.0.1"
 #define DEFAULT_PORT 10001
@@ -45,18 +68,21 @@ int main(int argc, char** argv)
 
     int nStartup = 0;
     struct sockaddr_in clientService;
-    WSADATA wsaData;
     SOCKET sockListen = INVALID_SOCKET;
     int nRet = 0;
-    //保存所有的客户端、服务端的SOCKET信息
+#ifdef _WIN32
+    WSADATA wsaData;
     if (0 != (nStartup = WSAStartup(MAKEWORD(2, 2), &wsaData)))
     {
         WSASetLastError(nStartup); //WSAStartup不会自动设置错误代码
         Print_ErrCode("WSAStartup()");
         return 1;
     }
+#endif
+
     clientService.sin_family = AF_INET;
-    clientService.sin_addr.s_addr = inet_addr(IP);
+    //clientService.sin_addr.s_addr = inet_addr(IP);
+    clientService.sin_addr.s_addr = htonl(INADDR_ANY);
     clientService.sin_port = htons(nPort);
     if (INVALID_SOCKET ==
         (sockListen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP))
@@ -65,10 +91,14 @@ int main(int argc, char** argv)
         Print_ErrCode("socket()");
         return 1;
     }
+#ifdef _WIN32
     u_long type = 1;
     ioctlsocket(sockListen, FIONBIO, &type);    
+#else
+    fcntl(sockListen, F_SETFL, O_NONBLOCK);
+#endif
     if (SOCKET_ERROR == bind(sockListen,
-        (SOCKADDR*)&clientService,
+        (sockaddr*)&clientService,
         sizeof(clientService)
     ))
     {
@@ -95,6 +125,7 @@ int main(int argc, char** argv)
             FD_ZERO(&fdRead);
             FD_ZERO(&fdWrite);
             FD_SET(sockListen, &fdRead);
+            SOCKET maxSock = sockListen;
             for (int i = 0; i < curr_size; i++)
             {
                 //对需要send的客户端连接select
@@ -104,18 +135,26 @@ int main(int argc, char** argv)
                 }
                 //对所有的客户端连接select
                 FD_SET(sockList[i].sock, &fdRead);
+                maxSock = max(maxSock, sockList[i].sock);
             }
             //这个操作会被阻塞
+#ifdef _WIN32
             nRet = select(0, &fdRead, &fdWrite, NULL, NULL);
+#else
+            nRet = select(maxSock + 1, &fdRead, &fdWrite, NULL, NULL);
+#endif
             if (FD_ISSET(sockListen, &fdRead))
             {
                 SOCKET sockNewClient = accept(sockListen, NULL, NULL);
                 sockList[curr_size].sock = sockNewClient;
                 sockList[curr_size++].Op = OP_READ;
+                printf("[Server]accept sockeID:%d\n", sockNewClient);
                 break;
             }
             //其他socket可用了，判断哪些能读，哪些能写
+#ifdef _WIN32
             if (fdRead.fd_count > 0)
+#endif
             {
                 for (int i = 0; i < curr_size; i++)
                 {
@@ -143,7 +182,9 @@ int main(int argc, char** argv)
                     }
                 }
             }
+#ifdef _WIN32
             if (fdWrite.fd_count > 0)
+#endif
             {
                 for (int i = 0; i < curr_size; i++)
                 {
@@ -152,7 +193,11 @@ int main(int argc, char** argv)
                         if (sockList[i].Op == OP_WRITE)
                         {
                             //开始send
+#ifdef _WIN32
                             nRet = send(sockList[i].sock, sockList[i].Buffer, sockList[i].bufLen, 0);
+#else
+                            nRet = send(sockList[i].sock, sockList[i].Buffer, sockList[i].bufLen, MSG_NOSIGNAL);
+#endif
                             //事实上，这里可能会有nRet小于bufLen的情况
                             if (nRet == SOCKET_ERROR)
                             {

@@ -4,10 +4,35 @@
 #include <iostream>
 #include <stdio.h>
 #include <stdlib.h>
-#include <winsock2.h>
 #include <string>
+#ifdef _WIN32
+#include <winsock2.h>
+#pragma comment(lib,"ws2_32.lib")
+#else
+#include <sys/types.h>      
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netinet/tcp.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <string.h>
 
-#pragma comment(lib, "ws2_32")
+typedef int SOCKET;
+typedef unsigned int DWORD;
+typedef unsigned char BYTE;
+#define FALSE 0 
+#define SOCKET_ERROR (-1) 
+#define INVALID_SOCKET (SOCKET)(~0)
+#define NO_ERROR    0
+
+int geterror() { return errno; }
+#define WSAGetLastError() geterror()
+#define Sleep   sleep
+#define max(a,b)            (((a) > (b)) ? (a) : (b))
+#define nullptr     0
+#endif
 
 std::string ip = "127.0.0.1";
 int nPort = 12345;
@@ -25,17 +50,18 @@ struct sockaddr_in sSever_c_sd[CLENT_NUM];
 int tcp_client_init(const char* ip, int iPort)
 {
     struct sockaddr_in ser; //服务器端地址
+#ifdef _WIN32
     WSADATA wsaData;
-
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
     {
         printf("Failed to load Winsock.\n"); //Winsock 初始化错误
         return -1;
     }
+#endif
     ser.sin_family = AF_INET;                        //初始化服务器地址信息
     ser.sin_port = htons(iPort);                     //端口转换为网络字节序
     ser.sin_addr.s_addr = inet_addr(ip); //IP 地址转换为网络字节序
-    sClient = socket(AF_INET, SOCK_STREAM, 0);       //创建客户端流式套接字
+    sClient = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);       //创建客户端流式套接字
     if (sClient == INVALID_SOCKET)
     {
         printf("socket() Failed: %d\n", WSAGetLastError());
@@ -54,7 +80,11 @@ int tcp_client_init(const char* ip, int iPort)
 
 int tcp_client_send(unsigned char* buff, int len)
 {
+#ifdef _WIN32
     int nRet = send(sClient, (const char*)buff, len, 0);
+#else
+    int nRet = send(sClient, (const char*)buff, len, MSG_NOSIGNAL);
+#endif
     if (nRet <= 0)
     {
         printf("send Failed: %d\n", WSAGetLastError());
@@ -83,8 +113,13 @@ int tcp_client_rcv(unsigned char* buff, int* len)
 
 int close_tcp_client()
 {
+#ifdef _WIN32
     closesocket(sClient); //关闭 socket
     WSACleanup();
+#else
+    close(sClient); //关闭 socket
+#endif
+    
     return 0;
 }
 
