@@ -14,7 +14,7 @@
 
 // 本地业务服务信息
 std::string strSvr = "127.0.0.1";
-#ifdef _DEBUG
+#if defined(_DEBUG) || !defined(_WIN32) // Windows调试模式和Linux模式，默认都连接EchoServer
 int nSvrPort = 10001;
 #else
 int nSvrPort = 3389;

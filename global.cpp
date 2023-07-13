@@ -479,6 +479,7 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
         return -2;
     }
 
+#ifdef _WIN32
     int TimeOut = 2*1000;			//设置发送超时2秒
     if (::setsockopt(*pSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&TimeOut, sizeof(TimeOut)) == SOCKET_ERROR)
     {
@@ -490,6 +491,17 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
     {
         PRINT_ERROR("%s,%d: connect socket %s:%d setopt RecvTimeout %d error\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, TimeOut);
     }
+#else
+    timeval timevalSendRecv = { 3, 0 };
+    if (::setsockopt(*pSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timevalSendRecv, sizeof(timevalSendRecv)) == SOCKET_ERROR)
+    {
+        PRINT_ERROR("%s,%d: connect socket %s:%d setopt SendTimeout %d error\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, 3);
+    }
+    if (::setsockopt(*pSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timevalSendRecv, sizeof(timevalSendRecv)) == SOCKET_ERROR)
+    {
+        PRINT_ERROR("%s,%d: connect socket %s:%d setopt RecvTimeout %d error\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, 3);
+    }
+#endif
 
     // 设置TCP的NoDelay，避免小包延迟
     int enable = 1;

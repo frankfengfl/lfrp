@@ -39,9 +39,7 @@ extern int geterror();
 * 2.本程序一律采用fill模式，解包时自动按填充的折算
 * 3.本程序跟lfrpTun相关的数据流完全加密，不留数据头，避免被检测头
 ********************************************************/
-#ifdef _WIN32
 #define USE_AES
-#endif
 
 #define LOCAL_IP "127.0.0.1"
 #define DEFAULT_BACKLOG 5
@@ -115,15 +113,23 @@ public:
         Op = 0;
         nMagicNum = MAGIC_NUMBER;
         nType = PACK_TYPE_UNKNOW;
-        nBufLen = 0;
-        pBuffer = nullptr;
-        nBufAlloc = 0;
         nPackLen = 0;
         nServiceNumber = -1;
         nSocketID = INVALID_SOCKET;
         nPackSeq = 0;
         nAcceptSec = 0;
+
+        nBufLen = 0;
+        pBuffer = nullptr;
+        nBufAlloc = 0;
         memset(Buffer, 0, ELEM_BUFFER_SIZE);
+
+#ifdef USE_AES
+        pEncBuffer = nullptr;
+        nEncBufAlloc = 0;
+        nEncBufLen = 0;
+        memset(EncBuffer, 0, ELEM_BUFFER_SIZE);
+#endif
     }
 
     void ClearBuffer()
@@ -165,9 +171,10 @@ public:
     int nPackSeq;               // 为每个SocketID连接
 
     // 接收数据相关
-    int nBufLen;
     int nType;                  // 收到的包类型
     int nPackLen;               // 包含头部8个字节
+    // 接受数据buffer
+    int nBufLen;
     char Buffer[ELEM_BUFFER_SIZE]; //前12个字节放MagicNum、Type和nPackLen，可跟多个包
     char* pBuffer;            // 超过BUFFER_SIZE只用这个存
     int nBufAlloc;              // 分配的pBuffer大小
