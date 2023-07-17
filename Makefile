@@ -1,5 +1,5 @@
 CFLAGS = -g -m64 -std=c++11 -O2 -march=native
-#CFLAGS = -g -m64 -std=c++11 -g -march=native
+#CFLAGS = -g -m64 -std=c++11 -march=native
 targetTun = ./bin/lfrpTun
 targetCli = ./bin/lfrpCli
 targetSvr = ./bin/lfrpSvr

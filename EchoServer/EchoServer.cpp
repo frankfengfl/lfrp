@@ -44,6 +44,12 @@ int curr_size = 0; //当前的句柄数
 #define MAX_SEND_SIZE   512
 #define BUFFER_SIZE     MAX_SEND_SIZE+1
 
+#ifdef _WIN32
+#define LFRP_SEND_FLAGS     0
+#else
+#define LFRP_SEND_FLAGS     MSG_NOSIGNAL
+#endif
+
 int nPort = DEFAULT_PORT;
 typedef struct _socklist
 {
@@ -193,11 +199,7 @@ int main(int argc, char** argv)
                         if (sockList[i].Op == OP_WRITE)
                         {
                             //开始send
-#ifdef _WIN32
-                            nRet = send(sockList[i].sock, sockList[i].Buffer, sockList[i].bufLen, 0);
-#else
-                            nRet = send(sockList[i].sock, sockList[i].Buffer, sockList[i].bufLen, MSG_NOSIGNAL);
-#endif
+                            nRet = send(sockList[i].sock, sockList[i].Buffer, sockList[i].bufLen, LFRP_SEND_FLAGS);
                             //事实上，这里可能会有nRet小于bufLen的情况
                             if (nRet == SOCKET_ERROR)
                             {

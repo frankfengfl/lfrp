@@ -47,6 +47,12 @@ struct sockaddr_in sSever_c_sd[CLENT_NUM];
 
 #define USER_ERROR -1
 
+#ifdef _WIN32
+#define LFRP_SEND_FLAGS     0
+#else
+#define LFRP_SEND_FLAGS     MSG_NOSIGNAL
+#endif
+
 int tcp_client_init(const char* ip, int iPort)
 {
     struct sockaddr_in ser; //服务器端地址
@@ -80,11 +86,7 @@ int tcp_client_init(const char* ip, int iPort)
 
 int tcp_client_send(unsigned char* buff, int len)
 {
-#ifdef _WIN32
-    int nRet = send(sClient, (const char*)buff, len, 0);
-#else
-    int nRet = send(sClient, (const char*)buff, len, MSG_NOSIGNAL);
-#endif
+    int nRet = send(sClient, (const char*)buff, len, LFRP_SEND_FLAGS);
     if (nRet <= 0)
     {
         printf("send Failed: %d\n", WSAGetLastError());

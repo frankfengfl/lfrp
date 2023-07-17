@@ -81,10 +81,16 @@ enum PackTypeEnum
 #define RECV_BUFFER_SIZE    10*1024        // socket接受一次大小
 #define BUFFER_SIZE 1024
 #define PACK_SIZE_HEADER 12
-#define PACK_SIZE_AUTH  20
+#define PACK_SIZE_AUTH  16
 #define PACK_SIZE_DATA_BEG  20
 #define PACK_SIZE_DATA  20
 #define PACK_SIZE_HEADER_MAX 20
+
+#ifdef _WIN32
+#define LFRP_SEND_FLAGS     0
+#else
+#define LFRP_SEND_FLAGS     MSG_NOSIGNAL
+#endif
 
 
 struct CBuffer
@@ -97,70 +103,11 @@ typedef std::vector<CBuffer> CVecBuffer;
 class CLfrpSocket
 {
 public:
-    CLfrpSocket()
-    {
-        InitMember();
-    }
+    CLfrpSocket();
+    ~CLfrpSocket();
 
-    ~CLfrpSocket()
-    {
-        ClearBuffer();
-    }
-
-    void InitMember()
-    {
-        sock = INVALID_SOCKET;
-        Op = 0;
-        nMagicNum = MAGIC_NUMBER;
-        nType = PACK_TYPE_UNKNOW;
-        nPackLen = 0;
-        nServiceNumber = -1;
-        nSocketID = INVALID_SOCKET;
-        nPackSeq = 0;
-        nAcceptSec = 0;
-
-        nBufLen = 0;
-        pBuffer = nullptr;
-        nBufAlloc = 0;
-        memset(Buffer, 0, ELEM_BUFFER_SIZE);
-
-#ifdef USE_AES
-        pEncBuffer = nullptr;
-        nEncBufAlloc = 0;
-        nEncBufLen = 0;
-        memset(EncBuffer, 0, ELEM_BUFFER_SIZE);
-#endif
-    }
-
-    void ClearBuffer()
-    {
-        if (pBuffer)
-        {
-            delete[] pBuffer;
-            pBuffer = nullptr;
-            nBufAlloc = 0;
-        }
-
-#ifdef USE_AES
-        if (pEncBuffer)
-        {
-            delete[] pEncBuffer;
-            pEncBuffer = nullptr;
-            nEncBufAlloc = 0;
-        }
-        nEncBufLen = 0;
-        memset(EncBuffer, 0, ELEM_BUFFER_SIZE);
-#endif
-
-        Op = 0;
-        nType = PACK_TYPE_UNKNOW;
-        nBufLen = 0;
-        nPackLen = 0;
-        nServiceNumber = -1;
-        nSocketID = INVALID_SOCKET;
-        nPackSeq = 0;
-        memset(Buffer, 0, ELEM_BUFFER_SIZE);
-    }
+    void InitMember();
+    void ClearBuffer();
 
 public:
     SOCKET sock;
@@ -180,7 +127,7 @@ public:
     int nBufAlloc;              // 分配的pBuffer大小
 
     //发送队列
-    CVecBuffer vecSendBuf;
+    CVecBuffer vecSendBuf;      // lfrpTun里存AES加密数据，避免重复加解密；其他存原始数据
 
     unsigned int nAcceptSec;
 
@@ -210,9 +157,11 @@ typedef std::map<int, int>  CSeqMap;                    // socketID->NextSeq
 
 void LfrpSetFD(CLfrpSocket* pSocket, fd_set& fdRead, fd_set& fdWrite);
 char* GetSocketBuffer(CLfrpSocket* pSocket);
+char* GetSocketEncBuffer(CLfrpSocket* pSocket);
 
 // 解析包里的头信息
 int ParsePackHeader(CLfrpSocket* pSocket);
+int ParsePackHeader(char* pBuffer, int nBufLen, int& nType, int& nPackLen);
 
 // 添加nRet的pData数据到Buffer
 bool AddDataToSocketBuffer(char Buffer[], char*& pBuffer, int& nBufLen, int& nBufAlloc, char* pData, int nRet);
@@ -222,11 +171,14 @@ bool RemoveDataFromSocketBuffer(char Buffer[], char*& pBuffer, int& nBufLen, int
 
 // recv封装，用于加入aes以及内存管理
 int LfrpRecv(CLfrpSocket* pSocket);                          // 数据流接收封装，返回值小于0错误，等于0断开，大于0正常
+int LfrpTunAESRecv(CLfrpSocket* pSocket);
 
 // 三个服务都是socket对，之间流转数据包
-int MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket);
+bool MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket);
+bool MoveSendAESPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket);
 
-void CopyOnePack(CLfrpSocket* pSocket, char* pBuf);
+// 取一个数据包
+void FetchOnePack(CLfrpSocket* pSocket, char* pBuf);
 
 // 丢弃一个数据包
 void DropOnePack(CLfrpSocket* pSocket);
@@ -236,6 +188,9 @@ void MakeDataEndPack(CBuffer& buf, int nSocketID, int nSeq);
 
 // LfrpTun服务根据一侧通道异常，组装通知Client或Server断开业务的消息
 void MakeTunEndPack(CBuffer& buf);        
+
+// 加密数据块
+void EncryptBuffer(CBuffer& buf);
 
 // close socket封装，带上清理内存
 void CloseLfrpSocket(CLfrpSocket* pSocket);
@@ -253,9 +208,9 @@ void GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen);
 // 连接socket封装
 int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort);
 
+// 判断是否需要等一下再发送，比如缓冲区堵住
+bool IsReSendSocketError(int nError);
+
 unsigned int GetCurSecond();
-#ifdef _WIN32
-// 准备给日志使用
-std::string GetCurTimeStr();    
-#endif
+const char* GetCurTimeStr();    // 单线程使用
 #endif

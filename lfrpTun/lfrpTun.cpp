@@ -34,32 +34,44 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
         bool bServerHasPack = (pair.pServer->nBufLen >= pair.pServer->nPackLen && pair.pServer->nPackLen > 0);
         if (pair.pServer && FD_ISSET(pair.pServer->sock, &fdRead))
         {
+#ifdef USE_AES
+            int nRet = LfrpTunAESRecv(pair.pServer);
+#else
             int nRet = LfrpRecv(pair.pServer);
+#endif
             if (nRet <= 0)
             {
-                PRINT_ERROR("Tun %s,%d: Server SocketID %d disconnect because read from Server err %d wsaerr %x\n ", __FUNCTION__, __LINE__, pair.pServer->sock, nRet, WSAGetLastError());
+                PRINT_ERROR("%s Tun %s,%d: Server SocketID %d disconnect because read from Server err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pServer->sock, nRet, WSAGetLastError());
                 // ServerTun断开，成对关掉，不需要通知，Server和Vistor两端断开会清理
                 vecDelPair.push_back(iter->first);
                 CloseLfrpSocket(pair.pServer);
                 if (pair.pVistor)
                 {
-                    PRINT_ERROR("Tun %s,%d: Vistor SocketID %d disconnect because server disconnet\n ", __FUNCTION__, __LINE__, pair.pVistor->sock);
+                    PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because server disconnet\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock);
                     CloseLfrpSocket(pair.pVistor);
                 }
             }
             else
             {
+#ifdef USE_AES
+                if (MoveSendAESPack(pair.pServer, pair.pVistor))
+                {
+                    PRINT_INFO("%s Tun %s,%d: Server send pack to Vistor\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+                    pair.pVistor->Op = OP_WRITE;
+                }
+#else
                 // 包收完全了
                 if (pair.pServer->nBufLen >= pair.pServer->nPackLen && pair.pServer->nPackLen > 0)
                 {
-                    PRINT_INFO("Tun %s,%d: Server recv socketID %d pack size %d seq %d\n ", __FUNCTION__, __LINE__, pair.pServer->nSocketID, nRet, pair.pServer->nPackSeq);
+                    PRINT_INFO("%s Tun %s,%d: Server recv socketID %d pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pServer->nSocketID, nRet, pair.pServer->nPackSeq);
                     //pair.pServer->Op = OP_WRITE;
                     if (MoveSendPack(pair.pServer, pair.pVistor))
                     {
-                        PRINT_INFO("Tun %s,%d: Server send pack to Vistor\n ", __FUNCTION__, __LINE__);
+                        PRINT_INFO("%s Tun %s,%d: Server send pack to Vistor\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                         pair.pVistor->Op = OP_WRITE;
                     }
                 }
+#endif
             }
         }
 
@@ -67,14 +79,22 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
         bool bVistorHasPack = (pair.pServer->nBufLen >= pair.pServer->nPackLen && pair.pServer->nPackLen > 0);
         if (pair.pVistor && FD_ISSET(pair.pVistor->sock, &fdRead))
         {
+#ifdef USE_AES
+            int nRet = LfrpTunAESRecv(pair.pVistor);
+#else
             int nRet = LfrpRecv(pair.pVistor);
+#endif
             if (nRet <= 0)
             {
-                PRINT_ERROR("Tun %s,%d: Vistor SocketID %d disconnect because read from Server err %d wsaerr %x\n ", __FUNCTION__, __LINE__, pair.pVistor->sock, nRet, WSAGetLastError());
+                PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because read from Server err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock, nRet, WSAGetLastError());
 
                 // 访问者关闭，发结束消息给Server
                 CBuffer buf;
                 MakeTunEndPack(buf);
+#ifdef USE_AES
+                // lfrpTun的vecSendBuf里存AES加密后的数据，避免重复加解密
+                EncryptBuffer(buf);
+#endif
                 iter->second.pServer->vecSendBuf.push_back(buf);
                 iter->second.pServer->Op = OP_WRITE;
                 CloseLfrpSocket(iter->second.pVistor);
@@ -83,16 +103,24 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
             }
             else
             {
+#ifdef USE_AES
+                if (MoveSendAESPack(pair.pVistor, pair.pServer))
+                {
+                    PRINT_INFO("%s Svr %s,%d: Vistor send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+                    pair.pServer->Op = OP_WRITE;
+                }
+#else
                 // 包收完全了
                 if (pair.pVistor->nBufLen >= pair.pVistor->nPackLen && pair.pVistor->nPackLen > 0)
                 {
-                    PRINT_INFO("Tun %s,%d: Vistor socketID %d recv pack size %d seq %d\n ", __FUNCTION__, __LINE__, pair.pVistor->nSocketID, nRet, pair.pVistor->nPackSeq);
+                    PRINT_INFO("%s Tun %s,%d: Vistor socketID %d recv pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->nSocketID, nRet, pair.pVistor->nPackSeq);
                     if (MoveSendPack(pair.pVistor, pair.pServer))
                     {
-                        PRINT_INFO("Svr %s,%d: Vistor send pack to Server\n ", __FUNCTION__, __LINE__);
+                        PRINT_INFO("%s Svr %s,%d: Vistor send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                         pair.pServer->Op = OP_WRITE;
                     }
                 }
+#endif
             }
         }
     }
@@ -122,10 +150,14 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
         if (FD_ISSET(vecSocket[i]->sock, &fdRead))
         {
             CLfrpSocket* pSocket = vecSocket[i];
+#ifdef USE_AES
+            int nRet = LfrpTunAESRecv(pSocket);
+#else
             int nRet = LfrpRecv(pSocket);
+#endif
             if (nRet <= 0)
             {
-                PRINT_ERROR("Tun %s,%d: new SocketID %d disconnect because read from Server err %d wsaerr %x\n ", __FUNCTION__, __LINE__, pSocket->sock, nRet, WSAGetLastError());
+                PRINT_ERROR("%s Tun %s,%d: new SocketID %d disconnect because read from Server err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nRet, WSAGetLastError());
                 // 新socket有问题，直接清除删掉
                 CloseLfrpSocket(pSocket);
                 vecDelSocket.push_back(pSocket);
@@ -136,7 +168,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
                 // 包收完全了
                 if (pSocket->nBufLen >= pSocket->nPackLen && pSocket->nPackLen > 0 && pSocket->nPackLen > 0)
                 {
-                    PRINT_INFO("Tun %s,%d: new socket recv pack size %d\n ", __FUNCTION__, __LINE__, nRet);
+                    PRINT_INFO("%s Tun %s,%d: new socket recv pack size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet);
                     //pSocket->Op = OP_WRITE;
                     if (pSocket->nType == PACK_TYPE_AUTH_SERVER)
                     {
@@ -164,7 +196,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
 
                         // 取掉认证包
                         char* pBuffer = new char[pSocket->nPackLen];
-                        CopyOnePack(pSocket, pBuffer);
+                        FetchOnePack(pSocket, pBuffer);
                         delete[] pBuffer;
                     }
                     else if (pSocket->nType == PACK_TYPE_AUTH_VISTOR)
@@ -172,7 +204,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
                         iterSockets iter = mapSocketPair.find(pSocket->nServiceNumber);
                         if (iter == mapSocketPair.end())
                         {
-                            PRINT_ERROR("Tun %s,%d: new SocketID %d disconnect because no server number find\n ", __FUNCTION__, __LINE__, pSocket->sock);
+                            PRINT_ERROR("%s Tun %s,%d: new SocketID %d disconnect because no server number find\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock);
                             // 没有服务，失败
                             CloseLfrpSocket(pSocket);
                             vecDelSocket.push_back(pSocket);
@@ -181,9 +213,13 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
                         {
                             if (iter->second.pVistor)
                             { // 删除之前的Vistor，并通知业务
-                                PRINT_ERROR("Tun %s,%d: Vistor SocketID %d disconnect because new Vistor connect\n ", __FUNCTION__, __LINE__, iter->second.pVistor->sock);
+                                PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because new Vistor connect\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->second.pVistor->sock);
                                 CBuffer buf;
                                 MakeTunEndPack(buf);
+#ifdef USE_AES
+                                // lfrpTun的vecSendBuf里存AES加密后的数据，避免重复加解密
+                                EncryptBuffer(buf);
+#endif
                                 iter->second.pServer->vecSendBuf.push_back(buf);
                                 iter->second.pServer->Op = OP_WRITE;
                                 CloseLfrpSocket(iter->second.pVistor);
@@ -193,13 +229,13 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
 
                             // 取掉认证包
                             char* pBuffer = new char[pSocket->nPackLen];
-                            CopyOnePack(pSocket, pBuffer);
+                            FetchOnePack(pSocket, pBuffer);
                             delete[] pBuffer;
                         }
                     }
                     else // if (pSocket->nType == PACK_TYPE_DATA)
                     {
-                        PRINT_ERROR("Tun %s,%d: new SocketID %d disconnect because first pack type is not auth type\n ", __FUNCTION__, __LINE__, pSocket->sock);
+                        PRINT_ERROR("%s Tun %s,%d: new SocketID %d disconnect because first pack type is not auth type\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock);
                         // 第一个包必须认证，否则断开
                         CloseLfrpSocket(pSocket);
                         vecDelSocket.push_back(pSocket);
@@ -253,52 +289,40 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                 for (int i = 0; i < pair.pServer->vecSendBuf.size(); i++)
                 {
                     CBuffer& buf = pair.pServer->vecSendBuf[i];
-                    int nType, nPakLen, nSocketID, nSeq;
-                    GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
-                    PRINT_INFO("Tun %s,%d: Server send socketID %d pack to BusServer size %d seq %d\n ", __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
-                    // 发送前加密
-                    char* pSendBuffer = buf.pBuffer;
-                    int nSendLen = buf.nLen;
+                    // 调试日志
+                    int nType, nPakLen, nSocketID, nSeq;
 #ifdef USE_AES
                     CAES cAes;
-                    pSendBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nSendLen, true);
-#endif
-                    //开始send
-#ifdef _WIN32
-                    nRet = send(pair.pServer->sock, pSendBuffer, nSendLen, 0);
+                    CBuffer bufDec;
+                    bufDec.nLen = 0;
+                    //bufDec.pBuffer = (char*)cAes.Decrypt(buf.pBuffer, buf.nLen, bufDec.nLen); // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+                    GetInfoFromBuf(bufDec, nType, nPakLen, nSocketID, nSeq);
+                    //delete[] bufDec.pBuffer; // 调试时开启，否则靠下面的GetInfoFromBuf初始化
 #else
-                    nRet = send(pair.pServer->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
+                    GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
 #endif
+                    PRINT_INFO("%s Tun %s,%d: Server send socketID %d pack to BusServer size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
-#ifdef _WIN32
-                    while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-#else
-                    while (nRet == SOCKET_ERROR && (WSAGetLastError() == EAGAIN || WSAGetLastError() == EWOULDBLOCK || WSAGetLastError() == EINTR))
-#endif
+                    //开始send
+                    nRet = send(pair.pServer->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                    while (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
                     { // 缓冲区堵塞等一下重发
-                        PRINT_ERROR("Tun %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, nSendLen);
+                        PRINT_ERROR("%s Tun %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
                         Sleep(1);
-#ifdef _WIN32
-                        nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, 0);
-#else
-                        nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
-#endif
+                        nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
                     }
-#ifdef USE_AES
-                    delete[] pSendBuffer;
-#endif
                     delete[] buf.pBuffer;
-                    //事实上，这里可能会有nRet小于bufLen的情况
+
                     if (nRet == SOCKET_ERROR || nRet == 0)
                     {
-                        PRINT_ERROR("Tun %s,%d: send to Server err %d to disconnect wsaerr %x", __FUNCTION__, __LINE__, nRet, WSAGetLastError());
+                        PRINT_ERROR("%s Tun %s,%d: send to Server err %d to disconnect wsaerr %x", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet, WSAGetLastError());
                         // ServerTun断开，成对关掉，不需要通知，Server和Vistor两端断开会清理
                         vecDelPair.push_back(iter->first);
                         CloseLfrpSocket(pair.pServer);
                         if (pair.pVistor)
                         {
-                            PRINT_ERROR("Tun %s,%d: Vistor SocketID %d disconnect because server disconnet\n ", __FUNCTION__, __LINE__, pair.pVistor->sock);
+                            PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because server disconnet\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock);
                             CloseLfrpSocket(pair.pVistor);
                         }
 
@@ -321,49 +345,41 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                 for (int i = 0; i < pair.pVistor->vecSendBuf.size(); i++)
                 {
                     CBuffer& buf = pair.pVistor->vecSendBuf[i];
+                    
+                    // 调试日志
                     int nType, nPakLen, nSocketID, nSeq;
-                    GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
-                    PRINT_INFO("Tun %s,%d: Vistor send socketID %d pack to Client size %d seq %d\n ", __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
-
-                    // 发送前加密
-                    char* pSendBuffer = buf.pBuffer;
-                    int nSendLen = buf.nLen;
 #ifdef USE_AES
                     CAES cAes;
-                    pSendBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nSendLen, true);
-#endif
-                    //开始send
-#ifdef _WIN32
-                    nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, 0);
+                    CBuffer bufDec;
+                    bufDec.nLen = 0;
+                    //bufDec.pBuffer = (char*)cAes.Decrypt(buf.pBuffer, buf.nLen, bufDec.nLen); // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+                    GetInfoFromBuf(bufDec, nType, nPakLen, nSocketID, nSeq);
+                    //delete[] bufDec.pBuffer; // 调试时开启，否则靠下面的GetInfoFromBuf初始化
 #else
-                    nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
+                    GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
 #endif
+                    PRINT_INFO("%s Tun %s,%d: Vistor send socketID %d pack to Client size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
-#ifdef _WIN32
-                    while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-#else
-                    while (nRet == SOCKET_ERROR && (WSAGetLastError() == EAGAIN || WSAGetLastError() == EWOULDBLOCK || WSAGetLastError() == EINTR))
-#endif
+                    //开始send
+                    nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                    while (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
                     { // 缓冲区堵塞等一下重发
-                        PRINT_ERROR("Tun %s,%d: send to Vistor err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, nSendLen);
+                        PRINT_ERROR("%s Tun %s,%d: send to Vistor err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
                         Sleep(1);
-#ifdef _WIN32
-                        nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, 0);
-#else
-                        nRet = send(pair.pVistor->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
-#endif
+                        nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
                     }
-#ifdef USE_AES
-                    delete[] pSendBuffer;
-#endif
                     delete[] buf.pBuffer;
-                    //事实上，这里可能会有nRet小于bufLen的情况
+                    
                     if (nRet == SOCKET_ERROR || nRet == 0)
                     {
-                        PRINT_ERROR("Tun %s,%d: send to Vistor err %d to disconnect wsaerr %x\n", __FUNCTION__, __LINE__, nRet, WSAGetLastError());
+                        PRINT_ERROR("%s Tun %s,%d: send to Vistor err %d to disconnect wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet, WSAGetLastError());
                         // 访问者关闭，发结束消息给Server
                         CBuffer buf;
                         MakeTunEndPack(buf);
+#ifdef USE_AES
+                        // lfrpTun的vecSendBuf里存AES加密后的数据，避免重复加解密
+                        EncryptBuffer(buf);
+#endif
                         iter->second.pServer->vecSendBuf.push_back(buf);
                         iter->second.pServer->Op = OP_WRITE;
                         CloseLfrpSocket(iter->second.pVistor);
@@ -404,7 +420,7 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
 
 int main(int argc, char** argv)
 {
-    PRINT_ERROR("Tun used as 'lfrpTun -p ListenPort -k AESKey', default is 'lfrpTun -p %d -k %s'\n ", nPort, strAesKey.c_str());
+    PRINT_ERROR("%s Tun used as 'lfrpTun -p ListenPort -k AESKey', default is 'lfrpTun -p %d -k %s'\n", GetCurTimeStr(), nPort, strAesKey.c_str());
     int i = 0;
     for (i = 0; i < argc; i++)
     {
@@ -480,7 +496,7 @@ int main(int argc, char** argv)
         close(sockListen);
 #endif
     }
-    printf("[Server]监听 %s:%d\n", strHost.c_str(), nPort);    //存放所有的socket，包括用于accept的socket。
+    printf("%s [Server]监听 %s:%d\n", GetCurTimeStr(), strHost.c_str(), nPort);    //存放所有的socket，包括用于accept的socket。
     CLfrpSocket sListen;
     sListen.sock = sockListen;
     while (true)
@@ -556,10 +572,10 @@ int main(int argc, char** argv)
                     int enable = 1;
                     if (setsockopt(sockNewClient, IPPROTO_TCP, TCP_NODELAY, (char*)&enable, sizeof(enable)) == SOCKET_ERROR)
                     {
-                        PRINT_ERROR("Tun %s,%d: accept socket setopt TCP_NODELAY error\n ", __FUNCTION__, __LINE__);
+                        PRINT_ERROR("%s Tun %s,%d: accept socket setopt TCP_NODELAY error\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                     }
 
-                    PRINT_ERROR("Tun %s,%d: accept new socketID %d\n ", __FUNCTION__, __LINE__, sockNewClient);
+                    PRINT_ERROR("%s Tun %s,%d: accept new socketID %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sockNewClient);
                     CLfrpSocket* pSocket = new CLfrpSocket;
                     pSocket->sock = sockNewClient;
                     pSocket->Op = OP_READ;

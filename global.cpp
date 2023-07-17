@@ -10,13 +10,88 @@
 #include "global.h"
 #include "aes.h"
 #ifndef _WIN32
-#include<sys/time.h>	
+#include<sys/time.h>
 int geterror() { return errno; }
 #endif
 
 #ifdef _WIN32
 #pragma comment(lib,"ws2_32.lib")
 #endif
+
+CLfrpSocket::CLfrpSocket()
+{
+    InitMember();
+}
+
+CLfrpSocket::~CLfrpSocket()
+{
+    ClearBuffer();
+}
+
+void CLfrpSocket::InitMember()
+{
+    sock = INVALID_SOCKET;
+    Op = 0;
+    nMagicNum = MAGIC_NUMBER;
+    nType = PACK_TYPE_UNKNOW;
+    nPackLen = 0;
+    nServiceNumber = -1;
+    nSocketID = INVALID_SOCKET;
+    nPackSeq = 0;
+    nAcceptSec = 0;
+
+    nBufLen = 0;
+    pBuffer = nullptr;
+    nBufAlloc = 0;
+    memset(Buffer, 0, ELEM_BUFFER_SIZE);
+
+#ifdef USE_AES
+    pEncBuffer = nullptr;
+    nEncBufAlloc = 0;
+    nEncBufLen = 0;
+    memset(EncBuffer, 0, ELEM_BUFFER_SIZE);
+#endif
+}
+
+void CLfrpSocket::ClearBuffer()
+{
+    if (pBuffer)
+    {
+        delete[] pBuffer;
+        pBuffer = nullptr;
+        nBufAlloc = 0;
+    }
+
+#ifdef USE_AES
+    if (pEncBuffer)
+    {
+        delete[] pEncBuffer;
+        pEncBuffer = nullptr;
+        nEncBufAlloc = 0;
+    }
+    nEncBufLen = 0;
+    memset(EncBuffer, 0, ELEM_BUFFER_SIZE);
+#endif
+
+    Op = 0;
+    nType = PACK_TYPE_UNKNOW;
+    nBufLen = 0;
+    nPackLen = 0;
+    nServiceNumber = -1;
+    nSocketID = INVALID_SOCKET;
+    nPackSeq = 0;
+    memset(Buffer, 0, ELEM_BUFFER_SIZE);
+
+    for (int i = 0; i < vecSendBuf.size(); i++)
+    {
+        CBuffer& buf = vecSendBuf[i];
+        if (buf.pBuffer)
+        {
+            delete[] buf.pBuffer;
+        }
+    }
+    vecSendBuf.clear();
+}
 
 void LfrpSetFD(CLfrpSocket* pSocket, fd_set& fdRead, fd_set& fdWrite)
 {
@@ -80,6 +155,26 @@ int ParsePackHeader(CLfrpSocket* pSocket)
     return 0;
 }
 
+int ParsePackHeader(char* pBuffer, int nBufLen, int& nType, int& nPackLen)
+{
+    if (nBufLen >= PACK_SIZE_HEADER)
+    {
+        int* pStream = (int*)pBuffer;
+        if (pStream[0] == MAGIC_NUMBER)
+        {
+            nType = pStream[1];
+            nPackLen = pStream[2];
+        }
+        else
+        {
+            // 公网上会有网络扫描，类似Cookie: mstshash = Administr
+            return -110;
+        }
+    }
+
+    return 0;
+}
+
 char* GetSocketBuffer(CLfrpSocket* pSocket)
 {
     if (pSocket->nBufLen > ELEM_BUFFER_SIZE)
@@ -89,6 +184,18 @@ char* GetSocketBuffer(CLfrpSocket* pSocket)
     else
     {
         return pSocket->Buffer;
+    }
+}
+
+char* GetSocketEncBuffer(CLfrpSocket* pSocket)
+{
+    if (pSocket->nEncBufLen > ELEM_BUFFER_SIZE)
+    {
+        return pSocket->pEncBuffer;
+    }
+    else
+    {
+        return pSocket->EncBuffer;
     }
 }
 
@@ -187,7 +294,7 @@ int LfrpRecv(CLfrpSocket* pSocket)
     }
     else if (nRet > 0)
     {
-        PRINT_INFO("Svr %s,%d: LfrpRecv recv pack size %d\n ", __FUNCTION__, __LINE__, nRet);
+        PRINT_INFO("%s Svr %s,%d: LfrpRecv recv pack size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet);
 #ifdef USE_AES
         // 先加数据到编码缓存
         AddDataToSocketBuffer(pSocket->EncBuffer, pSocket->pEncBuffer, pSocket->nEncBufLen, pSocket->nEncBufAlloc, Buffer, nRet);
@@ -217,7 +324,7 @@ int LfrpRecv(CLfrpSocket* pSocket)
                         {
                             if (bAddHeader)
                             { // 原先不够，拷贝包头大小过去解析，否则如果原先有头信息了，不需要拷贝节省性能
-                                //PRINT_INFO("%s,%d: Add header size %d\n ", __FUNCTION__, __LINE__, PACK_SIZE_HEADER);
+                                //PRINT_INFO("%s %s,%d: Add header size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, PACK_SIZE_HEADER);
                                 AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pData, PACK_SIZE_HEADER);
                                 pData += PACK_SIZE_HEADER;
                                 nDataLen -= PACK_SIZE_HEADER;
@@ -226,7 +333,7 @@ int LfrpRecv(CLfrpSocket* pSocket)
                             if (nParseRet < 0)
                             {
                                 // 如果是非法包，长度不够到这里10s还没收到认证包会断开，长度足够进入这个逻辑需要跳出
-                                PRINT_ERROR("%s,%d: receive illegal Pack size %d\n ", __FUNCTION__, __LINE__, nRet);
+                                PRINT_ERROR("%s %s,%d: receive illegal Pack size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet);
                                 delete[] pDec;
                                 delete[] pBuf;
                                 return nParseRet;
@@ -239,13 +346,13 @@ int LfrpRecv(CLfrpSocket* pSocket)
                             if (nBufLen + nDataLen > nPackLen)
                             { // 如果包收全了，解码包里才会有补码，跳过补码
                                 int nFillLen = ((nPackLen + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE) * AES_BLOCK_SIZE - nPackLen;
-                                //PRINT_INFO("%s,%d: aes fill size %d\n ", __FUNCTION__, __LINE__, nFillLen);
+                                //PRINT_INFO("%s %s,%d: aes fill size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nFillLen);
                                 //if (nFillLen)
                                 {
                                     int nRPackLen = nPackLen - nBufLen; // 剩余包大小是整个包大小减去已经移到Buffer里的
                                     if (nRPackLen > 0)
                                     { // 剩余包还有内容，先填入
-                                        //PRINT_INFO("%s,%d: Add nRPackLen size %d\n ", __FUNCTION__, __LINE__, nRPackLen);
+                                        //PRINT_INFO("%s %s,%d: Add nRPackLen size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRPackLen);
                                         AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pData, nRPackLen);
                                     }
                                     pData = pData + nRPackLen + nFillLen;
@@ -261,7 +368,7 @@ int LfrpRecv(CLfrpSocket* pSocket)
                                 // 如果包还没收全或正好收全，不会碰到补码，直接添加
                                 if (nDataLen)
                                 {
-                                    //PRINT_INFO("%s,%d: Add rest nDataLen size %d\n ", __FUNCTION__, __LINE__, nDataLen);
+                                    //PRINT_INFO("%s %s,%d: Add rest nDataLen size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nDataLen);
                                     AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pData, nDataLen);
                                     nDataLen = 0;
                                 }
@@ -272,14 +379,14 @@ int LfrpRecv(CLfrpSocket* pSocket)
                     }
                     else
                     {
-                        PRINT_ERROR("%s,%d: aes decrypt error\n ", __FUNCTION__, __LINE__);
+                        PRINT_ERROR("%s %s,%d: aes decrypt error\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                     }
                 }
                 delete[] pBuf;
             }
             else
             {
-                PRINT_ERROR("%s,%d: new buffer error size %d\n ", __FUNCTION__, __LINE__, nPackLen);
+                PRINT_ERROR("%s %s,%d: new buffer error size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nPackLen);
             }
         }
         
@@ -297,7 +404,76 @@ int LfrpRecv(CLfrpSocket* pSocket)
     return nRet;
 }
 
-void CopyOnePack(CLfrpSocket* pSocket, char* pBuf)
+// 通道接收AES数据转发
+int LfrpTunAESRecv(CLfrpSocket* pSocket)
+{
+    if (pSocket == nullptr)
+    {
+        return 0;
+    }
+
+    //开始recv
+    char Buffer[RECV_BUFFER_SIZE];
+    int nRet = recv(pSocket->sock, Buffer, RECV_BUFFER_SIZE, 0);
+    if (nRet == SOCKET_ERROR || nRet == 0)   // 远端断开触发=0
+    {
+        return nRet;
+    }
+    else if (nRet > 0)
+    {
+        PRINT_INFO("%s Svr %s,%d: LfrpRecv recv pack size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet);
+        // 先加数据到编码缓存
+        AddDataToSocketBuffer(pSocket->EncBuffer, pSocket->pEncBuffer, pSocket->nEncBufLen, pSocket->nEncBufAlloc, Buffer, nRet);
+        if (pSocket->nEncBufLen >= AES_BLOCK_SIZE)
+        { // 有足够的解码数据了
+            CAES cAes;
+            int nDecLen = 0;
+            char* pDecHeader = (char*)cAes.Decrypt(GetSocketEncBuffer(pSocket), AES_BLOCK_SIZE, nDecLen);
+            int nType = PACK_TYPE_UNKNOW;
+            int nPackLen = 0;
+
+            // Parse AES package header
+            int nParseRet = ParsePackHeader(pDecHeader, nDecLen, nType, nPackLen);
+            if (nParseRet < 0)
+            {
+                // 如果是非法包，长度不够到这里10s还没收到认证包会断开，长度足够进入这个逻辑需要跳出
+                PRINT_ERROR("%s %s,%d: receive illegal Pack size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet);
+                return nParseRet;
+            }
+
+            int nEncBufLen = ((nPackLen + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE) * AES_BLOCK_SIZE;
+            int nFillLen = nEncBufLen - nPackLen;
+            if (pSocket->nEncBufLen >= nEncBufLen)
+            { // 包接收完全了
+                if (nType == PACK_TYPE_AUTH_SERVER || nType == PACK_TYPE_AUTH_VISTOR)
+                { // 认证包
+                    char buf[AES_BLOCK_SIZE];
+                    RemoveDataFromSocketBuffer(pSocket->EncBuffer, pSocket->pEncBuffer, pSocket->nEncBufLen, pSocket->nEncBufAlloc, buf, nEncBufLen);
+
+                    if (nPackLen <= nDecLen)
+                    { // 包已经解码完全了
+                        AddDataToSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pDecHeader, nPackLen);
+                        ParsePackHeader(pSocket);
+                    }
+                    else
+                    { // 认证包目前16字节，不会超过
+                        PRINT_ERROR("%s %s,%d: Auth Pack Size %d is bigger than decode len %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nPackLen, nDecLen);
+                    }
+                }
+            }
+        }
+
+        // 非AES加密的首个包在这里解析
+        int nParseRet = ParsePackHeader(pSocket);
+        if (nParseRet < 0)
+        {
+            return nParseRet;
+        }
+    }
+    return nRet;
+}
+
+void FetchOnePack(CLfrpSocket* pSocket, char* pBuf)
 {
     if (RemoveDataFromSocketBuffer(pSocket->Buffer, pSocket->pBuffer, pSocket->nBufLen, pSocket->nBufAlloc, pBuf, pSocket->nPackLen))
     {
@@ -308,7 +484,7 @@ void CopyOnePack(CLfrpSocket* pSocket, char* pBuf)
     }
 }
 
-int MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
+bool MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
 {
     bool bDestSend = false;
     if (pSrcSocket->nBufLen >= pSrcSocket->nPackLen && pSrcSocket->nPackLen > 0)
@@ -318,14 +494,14 @@ int MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
             CBuffer buf;
             buf.nLen = pSrcSocket->nPackLen;
             buf.pBuffer = new char[pSrcSocket->nPackLen];
-            CopyOnePack(pSrcSocket, buf.pBuffer);
+            FetchOnePack(pSrcSocket, buf.pBuffer);
             pDesSocket->vecSendBuf.push_back(buf);
             //pair.pVistor->Op = OP_WRITE;
             bDestSend = true;
 
             int nType, nPakLen, nSocketID, nSeq;
             GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
-            PRINT_INFO("%s,%d: socketID %d trans pack size %d seq %d\n ", __FUNCTION__, __LINE__, nSocketID, nPakLen, nSeq);
+            PRINT_INFO("%s %s,%d: socketID %d trans pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, nPakLen, nSeq);
 
             // 如果源有多个数据包，一次转过去
             ParsePackHeader(pSrcSocket);
@@ -342,18 +518,59 @@ int MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
     return bDestSend;
 }
 
+bool MoveSendAESPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
+{
+    bool bDestSend = false;
+    // 如果源有多个数据包，一次转过去
+    while (pSrcSocket->nEncBufLen >= AES_BLOCK_SIZE)
+    { // 有足够的解码数据了
+        CAES cAes;
+        int nDecLen = 0;
+        char* pDecHeader = (char*)cAes.Decrypt(GetSocketEncBuffer(pSrcSocket), AES_BLOCK_SIZE, nDecLen);
+        int nType = PACK_TYPE_UNKNOW;
+        int nPackLen = 0;
+
+        // Parse AES package header
+        int nParseRet = ParsePackHeader(pDecHeader, nDecLen, nType, nPackLen);
+        if (nParseRet < 0)
+        {
+            // 如果是非法包，长度不够到这里10s还没收到认证包会断开，长度足够进入这个逻辑需要跳出
+            PRINT_ERROR("%s %s,%d: receive illegal Pack size ret %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nParseRet);
+            return nParseRet;
+        }
+
+        int nEncBufLen = ((nPackLen + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE) * AES_BLOCK_SIZE;
+        int nFillLen = nEncBufLen - nPackLen;
+        if (pSrcSocket->nEncBufLen >= nEncBufLen)
+        { // 包接收完全了
+            CBuffer buf;
+            buf.nLen = nEncBufLen;
+            buf.pBuffer = new char[nEncBufLen];
+            RemoveDataFromSocketBuffer(pSrcSocket->EncBuffer, pSrcSocket->pEncBuffer, pSrcSocket->nEncBufLen, pSrcSocket->nEncBufAlloc, buf.pBuffer, nEncBufLen);
+            pDesSocket->vecSendBuf.push_back(buf);
+            bDestSend = true;
+        }
+        else
+        {
+            break; //还未接收完成，这个AES头白解了，不过一般接收不完是大包，一个AES块白解还好
+        }
+    }
+
+    return bDestSend;
+}
+
 void DropOnePack(CLfrpSocket* pSocket)
 {
     if (pSocket->nPackLen > RECV_BUFFER_SIZE + PACK_SIZE_HEADER_MAX)
     {
         char* pBuffer = new char[pSocket->nPackLen];
-        CopyOnePack(pSocket, pBuffer);
+        FetchOnePack(pSocket, pBuffer);
         delete[] pBuffer;
     }
     else
     { // 不用new节约性能
         char buffer[RECV_BUFFER_SIZE + PACK_SIZE_HEADER_MAX];
-        CopyOnePack(pSocket, buffer);
+        FetchOnePack(pSocket, buffer);
     }
 }
 
@@ -379,11 +596,24 @@ void MakeTunEndPack(CBuffer& buf)
     pData[2] = buf.nLen;
 }
 
+void EncryptBuffer(CBuffer& buf)
+{
+    if (buf.nLen <= 0)
+        return;
+
+    int nEncLen = 0;
+    CAES cAes;
+    char* pEncBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nEncLen, true);
+    delete[] buf.pBuffer;
+    buf.pBuffer = pEncBuffer;
+    buf.nLen = nEncLen;
+}
+
 void CloseLfrpSocket(CLfrpSocket* pSocket)
 {
     if (pSocket == nullptr)
         return;
-    PRINT_ERROR("%s,%d: close socketID %d\n ", __FUNCTION__, __LINE__, pSocket->sock);
+    PRINT_ERROR("%s %s,%d: close socketID %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock);
 #ifdef _WIN32
     closesocket(pSocket->sock);
 #else
@@ -501,23 +731,23 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
     int TimeOut = 2*1000;			//设置发送超时2秒
     if (::setsockopt(*pSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&TimeOut, sizeof(TimeOut)) == SOCKET_ERROR)
     {
-        PRINT_ERROR("%s,%d: connect socket %s:%d setopt SendTimeout %d error\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, TimeOut);
+        PRINT_ERROR("%s %s,%d: connect socket %s:%d setopt SendTimeout %d error\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pIPAddress, nPort, TimeOut);
     }
 
     TimeOut = 2*1000;			//设置接收超时2秒
     if (::setsockopt(*pSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&TimeOut, sizeof(TimeOut)) == SOCKET_ERROR)
     {
-        PRINT_ERROR("%s,%d: connect socket %s:%d setopt RecvTimeout %d error\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, TimeOut);
+        PRINT_ERROR("%s %s,%d: connect socket %s:%d setopt RecvTimeout %d error\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pIPAddress, nPort, TimeOut);
     }
 #else
     timeval timevalSendRecv = { 3, 0 };
     if (::setsockopt(*pSocket, SOL_SOCKET, SO_SNDTIMEO, (char*)&timevalSendRecv, sizeof(timevalSendRecv)) == SOCKET_ERROR)
     {
-        PRINT_ERROR("%s,%d: connect socket %s:%d setopt SendTimeout %d error\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, 3);
+        PRINT_ERROR("%s %s,%d: connect socket %s:%d setopt SendTimeout %d error\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pIPAddress, nPort, 3);
     }
     if (::setsockopt(*pSocket, SOL_SOCKET, SO_RCVTIMEO, (char*)&timevalSendRecv, sizeof(timevalSendRecv)) == SOCKET_ERROR)
     {
-        PRINT_ERROR("%s,%d: connect socket %s:%d setopt RecvTimeout %d error\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, 3);
+        PRINT_ERROR("%s %s,%d: connect socket %s:%d setopt RecvTimeout %d error\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pIPAddress, nPort, 3);
     }
 #endif
 
@@ -525,7 +755,7 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
     int enable = 1;
     if (setsockopt(*pSocket, IPPROTO_TCP, TCP_NODELAY, (char*)&enable, sizeof(enable)) == SOCKET_ERROR)
     {
-        PRINT_ERROR("%s,%d: connect socket %s:%d setopt TCP_NODELAY error\n ", __FUNCTION__, __LINE__, pIPAddress, nPort);
+        PRINT_ERROR("%s %s,%d: connect socket %s:%d setopt TCP_NODELAY error\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pIPAddress, nPort);
     }
     
     sockaddr_in addrSrv;
@@ -546,7 +776,7 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
 #endif
     if (iRet != NO_ERROR)
     {
-        PRINT_ERROR("%s,%d: connect socket %s:%d ioctlsocket error %d\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, iRet);
+        PRINT_ERROR("%s %s,%d: connect socket %s:%d ioctlsocket error %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pIPAddress, nPort, iRet);
     }
     
     int conn_ret = connect(*pSocket, (sockaddr*)&addrSrv, sizeof(sockaddr));
@@ -559,7 +789,7 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
 #endif
     if (iRet != NO_ERROR)
     {
-        PRINT_ERROR("%s,%d: connect socket %s:%d ioctlsocket error %d\n ", __FUNCTION__, __LINE__, pIPAddress, nPort, iRet);
+        PRINT_ERROR("%s %s,%d: connect socket %s:%d ioctlsocket error %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pIPAddress, nPort, iRet);
     }
 
     timeval timeval = { 0 };
@@ -589,6 +819,15 @@ int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort)
     }
 }
 
+bool IsReSendSocketError(int nError)
+{
+#ifdef _WIN32
+    return (nError == WSAEWOULDBLOCK);
+#else
+    return (nError == EAGAIN || nError == EWOULDBLOCK || nError == EINTR);
+#endif
+}
+
 unsigned int GetCurSecond()
 {
 #ifdef _WIN32
@@ -601,19 +840,18 @@ unsigned int GetCurSecond()
 #endif
 }
 
-#ifdef _WIN32
-std::string GetCurTimeStr()
+// 此函数务必单线程使用，里面使用了静态变量
+const char* GetCurTimeStr()
 {
     // 获取当前系统时间
-    std::time_t currentTime = std::time(nullptr);
+    time_t currentTime = time(nullptr);
 
     // 将时间转换为本地时间
-    std::tm* localTime = std::localtime(&currentTime);
+    tm* localTime = localtime(&currentTime);
 
     // 使用 std::strftime 函数将时间格式化为字符串
-    char timeString[100];
-    std::strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", localTime);
+    static char timeString[100];
+    strftime(timeString, sizeof(timeString), "%Y-%m-%d %H:%M:%S", localTime);
 
     return timeString;
 }
-#endif

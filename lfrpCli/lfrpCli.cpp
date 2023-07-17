@@ -45,14 +45,14 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapLocalSvr, fd_set& fdRead
         int nRet = LfrpRecv(pTunSocket);
         if (nRet <= 0)
         {
-            PRINT_ERROR("Cli %s,%d: Tun SocketID %d disconnect because read err %d wsaerr %x\n ", __FUNCTION__, __LINE__, pTunSocket->sock, nRet, WSAGetLastError());
+            PRINT_ERROR("%s Cli %s,%d: Tun SocketID %d disconnect because read err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->sock, nRet, WSAGetLastError());
             CloseLfrpSocket(pTunSocket);
             // 通道关闭，所有客户侧连接清掉
             for (CSocketMap::iterator iter = mapLocalSvr.begin(); iter != mapLocalSvr.end(); iter++)
             {
                 if (iter->second->sock != INVALID_SOCKET)
                 {
-                    PRINT_ERROR("Svr %s,%d: Svr SocketID %d disconnect because tun socket disconnect\n ", __FUNCTION__, __LINE__, iter->second->sock);
+                    PRINT_ERROR("%s Svr %s,%d: Svr SocketID %d disconnect because tun socket disconnect\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->second->sock);
                     CloseLfrpSocket(iter->second);
                     delete iter->second;
                 }
@@ -65,13 +65,13 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapLocalSvr, fd_set& fdRead
             // 包收完全了
             while (pTunSocket->nBufLen >= pTunSocket->nPackLen && pTunSocket->nPackLen > 0)
             {
-                PRINT_INFO("Cli %s,%d: Tun recv socketID %d pack size %d seq %d\n ", __FUNCTION__, __LINE__, pTunSocket->nSocketID, nRet, pTunSocket->nPackSeq);
+                PRINT_INFO("%s Cli %s,%d: Tun recv socketID %d pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->nSocketID, nRet, pTunSocket->nPackSeq);
                 if (pTunSocket->nType == PACK_TYPE_DATA_END)
                 { // 客户端断开
                     CSocketMap::iterator iter = mapLocalSvr.find(pTunSocket->nSocketID);
                     if (iter != mapLocalSvr.end())
                     {
-                        PRINT_ERROR("Svr %s,%d: Svr SocketID %d disconnect because Cli send DataEnd\n ", __FUNCTION__, __LINE__, iter->second->sock);
+                        PRINT_ERROR("%s Svr %s,%d: Svr SocketID %d disconnect because Cli send DataEnd\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->second->sock);
                         // 服务侧断开，也要同时断开业务侧连接
                         RemoveSeqKey(iter->second->sock);  // 客户端断开，从map中删除
                         CloseLfrpSocket(iter->second);
@@ -90,7 +90,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapLocalSvr, fd_set& fdRead
                         CLfrpSocket* pSocket = iter->second;
                         if (pSocket->sock != INVALID_SOCKET)
                         {
-                            PRINT_INFO("Cli %s,%d: Tun send pack to Server\n ", __FUNCTION__, __LINE__);
+                            PRINT_INFO("%s Cli %s,%d: Tun send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                             if (MoveSendPack(pTunSocket, pSocket))
                             {
                                 pSocket->Op = OP_WRITE;
@@ -125,6 +125,11 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapLocalSvr, fd_set& fdRead
                     // 取掉结束包
                     DropOnePack(pTunSocket);
                 }
+                else
+                { // 不认识的包
+                    PRINT_ERROR("%s Svr %s,%d: receive illeage packe type %d size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->nType, pTunSocket->nPackLen);
+                    DropOnePack(pTunSocket);
+                }
             }
         }
     }
@@ -147,7 +152,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapLocalSvr, fd_set& fdRead
                     //{ //没有数据
                     //    continue;
                     //}
-                    PRINT_ERROR("Cli %s,%d: Svr SocketID %d disconnect because read err %x wsaerr %x\n ", __FUNCTION__, __LINE__, pSocket->sock, nRet, nLastErr);
+                    PRINT_ERROR("%s Cli %s,%d: Svr SocketID %d disconnect because read err %x wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nRet, nLastErr);
                     // 客户侧连接失败，需要通知服务侧清掉这条连接
                     DoBusSocketErr(pSocket, pTunSocket);
                     CloseLfrpSocket(pSocket);
@@ -157,7 +162,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapLocalSvr, fd_set& fdRead
                 else if (nRet > 0)
                 {
                     int nSeq = GetNextSeq(SEQ_CLIENT, pSocket->sock);
-                    PRINT_INFO("Cli %s,%d: Svr socketID %d recv pack size %d seq %d\n ", __FUNCTION__, __LINE__, pSocket->sock, nRet, nSeq);
+                    PRINT_INFO("%s Cli %s,%d: Svr socketID %d recv pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nRet, nSeq);
 
                     CBuffer buf;
                     buf.pBuffer = new char[PACK_SIZE_DATA + nRet];
@@ -210,7 +215,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
 
                 int nType, nPakLen, nSocketID, nSeq;
                 GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
-                PRINT_INFO("Cli %s,%d: Tun send socketID %d pack to TunServer size %d seq %d\n ", __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
+                PRINT_INFO("%s Cli %s,%d: Tun send socketID %d pack to TunServer size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
                 // 发送前加密
                 char* pSendBuffer = buf.pBuffer;
@@ -221,26 +226,12 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
 #endif
 
                 //开始send
-#ifdef _WIN32
-                nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, 0);
-#else
-                nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
-#endif
-
-#ifdef _WIN32
-                while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-#else
-                
-                while (nRet == SOCKET_ERROR && (WSAGetLastError() == EAGAIN || WSAGetLastError() == EWOULDBLOCK || WSAGetLastError() == EINTR) )
-#endif
+                nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
+                while (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
                 { // 缓冲区堵塞等一下重发
-                    PRINT_ERROR("Cli %s,%d: send to Tun err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, nSendLen);
+                    PRINT_ERROR("%s Cli %s,%d: send to Tun err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSendLen);
                     Sleep(1);
-#ifdef _WIN32
-                    nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, 0);
-#else
-                    nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, MSG_NOSIGNAL);
-#endif
+                    nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
                 }
 #ifdef USE_AES
                 delete[] pSendBuffer;
@@ -249,7 +240,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                 //事实上，这里可能会有nRet小于bufLen的情况
                 if (nRet == SOCKET_ERROR || nRet == 0)
                 {
-                    PRINT_ERROR("Cli %s,%d: Tun SocketID %d disconnect because send err %x\n ", __FUNCTION__, __LINE__, pTunSocket->sock, nRet);
+                    PRINT_ERROR("%s Cli %s,%d: Tun SocketID %d disconnect because send err %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->sock, nRet);
                     // Server关闭了
                     CloseLfrpSocket(pTunSocket);
                     // 通道关闭，所有客户侧连接清掉
@@ -257,7 +248,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                     {
                         if (iter->second->sock != INVALID_SOCKET)
                         {
-                            PRINT_ERROR("Svr %s,%d: Svr SocketID %d disconnect because tun socket disconnect\n ", __FUNCTION__, __LINE__, iter->second->sock);
+                            PRINT_ERROR("%s Cli %s,%d: Svr SocketID %d disconnect because tun socket disconnect\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->second->sock);
                             CloseLfrpSocket(iter->second);
                             delete iter->second;
                         }
@@ -287,33 +278,20 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                     {
                         int nType, nPakLen, nSocketID, nSeq;
                         GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
-                        PRINT_INFO("Cli %s,%d: Svr send socketID %d pack to User size %d seq %d\n ", __FUNCTION__, __LINE__, nSocketID, buf.nLen - PACK_SIZE_DATA, nSeq);
+                        PRINT_INFO("%s Cli %s,%d: Svr send socketID %d pack to User size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen - PACK_SIZE_DATA, nSeq);
 
                         //开始send
-#ifdef _WIN32
-                        nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, 0);
-#else
-                        nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, MSG_NOSIGNAL);
-#endif
-
-#ifdef _WIN32
-                        while (nRet == SOCKET_ERROR && WSAGetLastError() == WSAEWOULDBLOCK)
-#else
-                        while (nRet == SOCKET_ERROR && (WSAGetLastError() == EAGAIN || WSAGetLastError() == EWOULDBLOCK || WSAGetLastError() == EINTR))
-#endif
+                        nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, LFRP_SEND_FLAGS);
+                        while (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
                         { // 缓冲区堵塞等一下重发
-                            PRINT_ERROR("Cli %s,%d: send to User err size %d wsaerr WSAEWOULDBLOCK\n", __FUNCTION__, __LINE__, buf.nLen - PACK_SIZE_DATA);
+                            PRINT_ERROR("%s Cli %s,%d: send to User err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen - PACK_SIZE_DATA);
                             Sleep(1);
-#ifdef _WIN32
-                            nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, 0);
-#else
-                            nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, MSG_NOSIGNAL);
-#endif
+                            nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, LFRP_SEND_FLAGS);
                         }
                         //事实上，这里可能会有nRet小于bufLen的情况
                         if (nRet == SOCKET_ERROR || nRet == 0)
                         {
-                            PRINT_ERROR("Cli %s,%d: Svr SocketID %d disconnect because send err %x wsaerr %x\n ", __FUNCTION__, __LINE__, pSocket->sock, nRet, WSAGetLastError());
+                            PRINT_ERROR("%s Cli %s,%d: Svr SocketID %d disconnect because send err %x wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nRet, WSAGetLastError());
                             // 客户侧连接失败，需要通知服务侧清掉这条连接
                             DoBusSocketErr(pSocket, pTunSocket);
                             CloseLfrpSocket(pSocket);
@@ -381,7 +359,7 @@ void SendNewClientBegin(CLfrpSocket* pSocket, CLfrpSocket* pTunSocket)
 
 int main(int argc, char** argv)
 {
-    PRINT_ERROR("Cli used as 'lfrpCli -th tunHost -tp tunPort -sp LocalServerPort -sn ServiceNumber -k AESKey', default is 'lfrpCli -th %s -tp %d -sp %d -sn %d -k %s'\n ", strTun.c_str(), nTunPort, nSvrPort, nServiceNumber, strAesKey.c_str());
+    PRINT_ERROR("%s Cli used as 'lfrpCli -th tunHost -tp tunPort -sp LocalServerPort -sn ServiceNumber -k AESKey', default is 'lfrpCli -th %s -tp %d -sp %d -sn %d -k %s'\n", GetCurTimeStr(), strTun.c_str(), nTunPort, nSvrPort, nServiceNumber, strAesKey.c_str());
     int i = 0;
     for (i = 0; i < argc; i++)
     {
@@ -467,7 +445,7 @@ int main(int argc, char** argv)
         close(sockListen);
 #endif
     }
-    printf("[Server]监听 %s:%d\n", strSvr.c_str(), nSvrPort);    //存放所有的socket，包括用于accept的socket。
+    printf("%s [Server]监听 %s:%d\n", GetCurTimeStr(), strSvr.c_str(), nSvrPort); 
 
     CLfrpSocket sockTun;
     CSocketMap mapSvr;    // 业务服务代理连接
@@ -475,7 +453,7 @@ int main(int argc, char** argv)
     if (ConnectSocket(&sockTun.sock, strTun.c_str(), nTunPort) != 0)
     {
         sockTun.sock = INVALID_SOCKET;
-        printf("connect() Tun Failed: %d\n", WSAGetLastError());
+        printf("%s connect() Tun Failed: %d\n", GetCurTimeStr(), WSAGetLastError());
     }
     else
     {
@@ -527,12 +505,12 @@ int main(int argc, char** argv)
                     SOCKET sockNewClient = accept(sockListen, NULL, NULL);
                     if (sockNewClient != INVALID_SOCKET)
                     {
-                        PRINT_ERROR("Cli %s,%d: accept new socketID %d\n ", __FUNCTION__, __LINE__, sockNewClient);
+                        PRINT_ERROR("%s Cli %s,%d: accept new socketID %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sockNewClient);
 
                         int enable = 1;
                         if (setsockopt(sockNewClient, IPPROTO_TCP, TCP_NODELAY, (char*)&enable, sizeof(enable)) == SOCKET_ERROR)
                         {
-                            PRINT_ERROR("Cli %s,%d: accept socket setopt TCP_NODELAY error\n ", __FUNCTION__, __LINE__);
+                            PRINT_ERROR("%s Cli %s,%d: accept socket setopt TCP_NODELAY error\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                         }
 
                         CLfrpSocket* pSocket = new CLfrpSocket;
@@ -575,15 +553,16 @@ int main(int argc, char** argv)
                 // 通道连接失败要重连，但需要有间隔
                 if (sockTun.sock == INVALID_SOCKET && uSec - uLastTunSec > 5)
                 {
-                    PRINT_ERROR("Cli %s,%d: ConnectSocket %s:%d\n ", __FUNCTION__, __LINE__, strTun.c_str(), nTunPort);
+                    PRINT_ERROR("%s Cli %s,%d: ConnectSocket %s:%d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, strTun.c_str(), nTunPort);
                     if (ConnectSocket(&sockTun.sock, strTun.c_str(), nTunPort) != 0)
                     {
                         sockTun.sock = INVALID_SOCKET;
-                        printf("reconnect() Tun Failed: %d\n", WSAGetLastError());
+                        printf("%s reconnect() Tun Failed: %d\n", GetCurTimeStr(), WSAGetLastError());
                         //return -1;
                     }
                     else
                     {
+                        sockTun.ClearBuffer();  //  bind在timewait时会进这里，但实际发不出去，等后面真连成功会有多个认证包
                         SendTunLogin(&sockTun);
                     }
                     uLastTunSec = uSec;
