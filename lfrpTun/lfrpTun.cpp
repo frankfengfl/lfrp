@@ -313,6 +313,8 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                         nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
                     }
                     delete[] buf.pBuffer;
+                    buf.pBuffer = nullptr;
+                    buf.nLen = 0;
 
                     if (nRet == SOCKET_ERROR || nRet == 0)
                     {
@@ -369,6 +371,8 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                         nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
                     }
                     delete[] buf.pBuffer;
+                    buf.pBuffer = nullptr;
+                    buf.nLen = 0;
                     
                     if (nRet == SOCKET_ERROR || nRet == 0)
                     {

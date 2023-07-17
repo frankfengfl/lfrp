@@ -237,6 +237,8 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                 delete[] pSendBuffer;
 #endif
                 delete[] buf.pBuffer;
+                buf.pBuffer = nullptr;
+                buf.nLen = 0;
                 //事实上，这里可能会有nRet小于bufLen的情况
                 if (nRet == SOCKET_ERROR || nRet == 0)
                 {
@@ -301,6 +303,8 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                         }
                     }
                     delete[] buf.pBuffer;
+                    buf.pBuffer = nullptr;
+                    buf.nLen = 0;
                 }
                 pSocket->vecSendBuf.clear();
                 pSocket->Op = OP_READ;
