@@ -39,6 +39,7 @@ void CLfrpSocket::InitMember()
     nSocketID = INVALID_SOCKET;
     nPackSeq = 0;
     nAcceptSec = 0;
+    nLastRecvSec = 0;
 
     nBufLen = 0;
     pBuffer = nullptr;
@@ -145,6 +146,13 @@ int ParsePackHeader(CLfrpSocket* pSocket)
         }
     }
     else if (pSocket->nType >= PACK_TYPE_TUN_BEG && pSocket->nType <= PACK_TYPE_TUN_END)
+    {
+        if (pSocket->nBufLen >= PACK_SIZE_HEADER)
+        {
+            // nothing added for Tun pack
+        }
+    }
+    else if (pSocket->nType == PACK_TYPE_HEART_BEAT)
     {
         if (pSocket->nBufLen >= PACK_SIZE_HEADER)
         {
@@ -294,6 +302,7 @@ int LfrpRecv(CLfrpSocket* pSocket)
     }
     else if (nRet > 0)
     {
+        pSocket->nLastRecvSec = GetCurSecond();
         PRINT_INFO("%s Svr %s,%d: LfrpRecv recv pack size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet);
 #ifdef USE_AES
         // 先加数据到编码缓存
@@ -421,6 +430,7 @@ int LfrpTunAESRecv(CLfrpSocket* pSocket)
     }
     else if (nRet > 0)
     {
+        pSocket->nLastRecvSec = GetCurSecond();
         PRINT_INFO("%s Svr %s,%d: LfrpRecv recv pack size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet);
         // 先加数据到编码缓存
         AddDataToSocketBuffer(pSocket->EncBuffer, pSocket->pEncBuffer, pSocket->nEncBufLen, pSocket->nEncBufAlloc, Buffer, nRet);
@@ -458,6 +468,15 @@ int LfrpTunAESRecv(CLfrpSocket* pSocket)
                     else
                     { // 认证包目前16字节，不会超过
                         PRINT_ERROR("%s %s,%d: Auth Pack Size %d is bigger than decode len %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nPackLen, nDecLen);
+                    }
+                }
+                else if (nType == PACK_TYPE_HEART_BEAT)
+                {// 心跳包丢弃
+                    char buf[AES_BLOCK_SIZE];
+                    RemoveDataFromSocketBuffer(pSocket->EncBuffer, pSocket->pEncBuffer, pSocket->nEncBufLen, pSocket->nEncBufAlloc, buf, nEncBufLen);
+                    if (nPackLen > nDecLen)
+                    { // 心跳包目前12字节，不会超过16字节
+                        PRINT_ERROR("%s %s,%d: HeartBeat Pack Size %d is bigger than decode len %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nPackLen, nDecLen);
                     }
                 }
             }
@@ -501,7 +520,7 @@ bool MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
 
             int nType, nPakLen, nSocketID, nSeq;
             GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
-            PRINT_INFO("%s %s,%d: socketID %d trans pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, nPakLen, nSeq);
+            PRINT_INFO("%s %s,%d: socketID %d trans pack type %d size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, nType, nPakLen, nSeq);
 
             // 如果源有多个数据包，一次转过去
             ParsePackHeader(pSrcSocket);
@@ -511,6 +530,12 @@ bool MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
             }
             else if (pSrcSocket->nType >= PACK_TYPE_TUN_BEG && pSrcSocket->nType <= PACK_TYPE_TUN_END)
             {
+                MoveSendPack(pSrcSocket, pDesSocket);
+            }
+            else if (pSrcSocket->nType == PACK_TYPE_HEART_BEAT)
+            { // 中间如果有心跳包，取掉包进下一个循环
+                DropOnePack(pSrcSocket);
+                ParsePackHeader(pSrcSocket);
                 MoveSendPack(pSrcSocket, pDesSocket);
             }
         }
@@ -547,8 +572,15 @@ bool MoveSendAESPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
             buf.nLen = nEncBufLen;
             buf.pBuffer = new char[nEncBufLen];
             RemoveDataFromSocketBuffer(pSrcSocket->EncBuffer, pSrcSocket->pEncBuffer, pSrcSocket->nEncBufLen, pSrcSocket->nEncBufAlloc, buf.pBuffer, nEncBufLen);
-            pDesSocket->vecSendBuf.push_back(buf);
-            bDestSend = true;
+            if (nType == PACK_TYPE_HEART_BEAT)
+            { // 心跳包丢弃
+                delete[] buf.pBuffer;
+            }
+            else
+            {
+                pDesSocket->vecSendBuf.push_back(buf);
+                bDestSend = true;
+            }
         }
         else
         {
@@ -574,6 +606,16 @@ void DropOnePack(CLfrpSocket* pSocket)
     }
 }
 
+void MakeHeartBeatPack(CBuffer& buf)
+{
+    buf.pBuffer = new char[PACK_SIZE_HEADER];
+    buf.nLen = PACK_SIZE_HEADER;
+    int* pData = (int*)buf.pBuffer;
+    pData[0] = MAGIC_NUMBER;
+    pData[1] = PACK_TYPE_HEART_BEAT;
+    pData[2] = buf.nLen; 
+}
+
 void MakeDataEndPack(CBuffer& buf,int nSocketID, int nSeq)
 {
     buf.pBuffer = new char[PACK_SIZE_DATA];
@@ -588,7 +630,7 @@ void MakeDataEndPack(CBuffer& buf,int nSocketID, int nSeq)
 
 void MakeTunEndPack(CBuffer& buf)
 {
-    buf.pBuffer = new char[PACK_SIZE_DATA];
+    buf.pBuffer = new char[PACK_SIZE_HEADER];
     buf.nLen = PACK_SIZE_HEADER;
     int* pData = (int*)buf.pBuffer;
     pData[0] = MAGIC_NUMBER;
@@ -693,6 +735,13 @@ void GetInfoFromBuf(CBuffer& buf, int& nType, int& nLen, int& nSocketID, int& nS
         }
         else if (nType >= PACK_TYPE_TUN_BEG && nType <= PACK_TYPE_TUN_END)
         {
+            if (nLen >= PACK_SIZE_HEADER)
+            {
+                // nothing to get
+            }
+        }
+        else if (nType == PACK_TYPE_HEART_BEAT)
+        { 
             if (nLen >= PACK_SIZE_HEADER)
             {
                 // nothing to get

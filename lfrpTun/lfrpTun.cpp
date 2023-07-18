@@ -22,6 +22,53 @@ int nPort = 6868;
 // AES key
 std::string strAesKey = "asdf1234567890";
 
+void CloseServerSocket(CSocketPair& pair)
+{
+    CloseLfrpSocket(pair.pServer);
+    if (pair.pVistor)
+    {
+        PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because server disconnet\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock);
+        CloseLfrpSocket(pair.pVistor);
+    }
+}
+
+void CloseVistorSocket(CSocketPair& pair)
+{
+    // 访问者关闭，发结束消息给Server
+    CBuffer buf;
+    MakeTunEndPack(buf);
+#ifdef USE_AES
+    // lfrpTun的vecSendBuf里存AES加密后的数据，避免重复加解密
+    EncryptBuffer(buf);
+#endif
+    pair.pServer->vecSendBuf.push_back(buf);
+    pair.pServer->Op = OP_WRITE;
+    CloseLfrpSocket(pair.pVistor);
+    delete pair.pVistor;
+    pair.pVistor = nullptr;
+}
+
+void DelSocketPairFromMap(std::vector<int>& vecDelPair, CSocketPairMap& mapSocketPair)
+{
+    for (int i = 0; i < vecDelPair.size(); i++)
+    {
+        iterSockets iter = mapSocketPair.find(vecDelPair[i]);
+        if (iter != mapSocketPair.end())
+        {
+            if (iter->second.pServer)
+            {
+                delete iter->second.pServer;
+            }
+            if (iter->second.pVistor)
+            {
+                delete iter->second.pVistor;
+            }
+            mapSocketPair.erase(iter);
+        }
+    }
+    vecDelPair.clear();
+}
+
 void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
 {
     int nRet = 0;
@@ -29,7 +76,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
     // 处理所有socket对的收数据
     for (iterSockets iter = mapSocketPair.begin(); iter != mapSocketPair.end(); iter++)
     {
-        CSocketPair pair = iter->second;
+        CSocketPair& pair = iter->second;
         // todo，从vector移上来只处理了头包，还没处理数据包
         bool bServerHasPack = (pair.pServer->nBufLen >= pair.pServer->nPackLen && pair.pServer->nPackLen > 0);
         if (pair.pServer && FD_ISSET(pair.pServer->sock, &fdRead))
@@ -44,12 +91,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
                 PRINT_ERROR("%s Tun %s,%d: Server SocketID %d disconnect because read from Server err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pServer->sock, nRet, WSAGetLastError());
                 // ServerTun断开，成对关掉，不需要通知，Server和Vistor两端断开会清理
                 vecDelPair.push_back(iter->first);
-                CloseLfrpSocket(pair.pServer);
-                if (pair.pVistor)
-                {
-                    PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because server disconnet\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock);
-                    CloseLfrpSocket(pair.pVistor);
-                }
+                CloseServerSocket(pair);
             }
             else
             {
@@ -87,19 +129,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
             if (nRet <= 0)
             {
                 PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because read from Server err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock, nRet, WSAGetLastError());
-
-                // 访问者关闭，发结束消息给Server
-                CBuffer buf;
-                MakeTunEndPack(buf);
-#ifdef USE_AES
-                // lfrpTun的vecSendBuf里存AES加密后的数据，避免重复加解密
-                EncryptBuffer(buf);
-#endif
-                iter->second.pServer->vecSendBuf.push_back(buf);
-                iter->second.pServer->Op = OP_WRITE;
-                CloseLfrpSocket(iter->second.pVistor);
-                delete iter->second.pVistor;  
-                iter->second.pVistor = nullptr;
+                CloseVistorSocket(pair);
             }
             else
             {
@@ -125,22 +155,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
         }
     }
     // 删掉服务端断掉的
-    for (int i = 0; i < vecDelPair.size(); i++)
-    {
-        iterSockets iter = mapSocketPair.find(vecDelPair[i]);
-        if (iter != mapSocketPair.end())
-        {
-            if (iter->second.pServer)
-            {
-                delete iter->second.pServer;
-            }
-            if (iter->second.pVistor)
-            {
-                delete iter->second.pVistor;
-            }
-            mapSocketPair.erase(iter);
-        }
-    }
+    DelSocketPairFromMap(vecDelPair, mapSocketPair);
 
     CSocketVec vecDelSocket;
     CSocketVec vecRemoveSocket;
@@ -214,16 +229,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
                             if (iter->second.pVistor)
                             { // 删除之前的Vistor，并通知业务
                                 PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because new Vistor connect\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->second.pVistor->sock);
-                                CBuffer buf;
-                                MakeTunEndPack(buf);
-#ifdef USE_AES
-                                // lfrpTun的vecSendBuf里存AES加密后的数据，避免重复加解密
-                                EncryptBuffer(buf);
-#endif
-                                iter->second.pServer->vecSendBuf.push_back(buf);
-                                iter->second.pServer->Op = OP_WRITE;
-                                CloseLfrpSocket(iter->second.pVistor);
-                                delete iter->second.pVistor;
+                                CloseVistorSocket(iter->second);
                             }
                             iter->second.pVistor = pSocket;
 
@@ -280,7 +286,7 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
     std::vector<int> vecDelPair;
     for (iterSockets iter = mapSocketPair.begin(); iter != mapSocketPair.end(); iter++)
     {
-        CSocketPair pair = iter->second;
+        CSocketPair& pair = iter->second;
         if (pair.pServer && FD_ISSET(pair.pServer->sock, &fdWrite))
         {
             if (pair.pServer->Op == OP_WRITE)
@@ -321,12 +327,7 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                         PRINT_ERROR("%s Tun %s,%d: send to Server err %d to disconnect wsaerr %x", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet, WSAGetLastError());
                         // ServerTun断开，成对关掉，不需要通知，Server和Vistor两端断开会清理
                         vecDelPair.push_back(iter->first);
-                        CloseLfrpSocket(pair.pServer);
-                        if (pair.pVistor)
-                        {
-                            PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because server disconnet\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock);
-                            CloseLfrpSocket(pair.pVistor);
-                        }
+                        CloseServerSocket(pair);
 
                         nError = true;
                         break;  // socket异常不发剩余数据
@@ -378,17 +379,7 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                     {
                         PRINT_ERROR("%s Tun %s,%d: send to Vistor err %d to disconnect wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet, WSAGetLastError());
                         // 访问者关闭，发结束消息给Server
-                        CBuffer buf;
-                        MakeTunEndPack(buf);
-#ifdef USE_AES
-                        // lfrpTun的vecSendBuf里存AES加密后的数据，避免重复加解密
-                        EncryptBuffer(buf);
-#endif
-                        iter->second.pServer->vecSendBuf.push_back(buf);
-                        iter->second.pServer->Op = OP_WRITE;
-                        CloseLfrpSocket(iter->second.pVistor);
-                        delete iter->second.pVistor;
-                        iter->second.pVistor = nullptr;
+                        CloseVistorSocket(pair);
 
                         nError = true;
                         break; // socket异常不发剩余数据
@@ -404,22 +395,33 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
     }
 
     // 删掉服务端断掉的
-    for (int i = 0; i < vecDelPair.size(); i++)
+    DelSocketPairFromMap(vecDelPair, mapSocketPair);
+}
+
+void CheckSocketTimeout(CSocketPairMap& mapSocketPair)
+{
+    unsigned int uSec = GetCurSecond();
+    std::vector<int> vecDelPair;
+    for (iterSockets iter = mapSocketPair.begin(); iter != mapSocketPair.end(); iter++)
     {
-        iterSockets iter = mapSocketPair.find(vecDelPair[i]);
-        if (iter != mapSocketPair.end())
+        CSocketPair& pair = iter->second;
+        if (pair.pServer && pair.pServer->sock != INVALID_SOCKET && uSec - pair.pServer->nLastRecvSec > 30)
         {
-            if (iter->second.pServer)
-            {
-                delete iter->second.pServer;
-            }
-            if (iter->second.pVistor)
-            {
-                delete iter->second.pVistor;
-            }
-            mapSocketPair.erase(iter);
+            PRINT_ERROR("%s Tun %s,%d: Server SocketID %d disconnect because receive timeout %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pServer->sock, uSec - pair.pServer->nLastRecvSec);
+            // ServerTun断开，成对关掉，不需要通知，Server和Vistor两端断开会清理
+            vecDelPair.push_back(iter->first);
+            CloseServerSocket(pair);
+        }
+        else if (pair.pVistor && pair.pVistor->sock != INVALID_SOCKET && uSec - pair.pVistor->nLastRecvSec > 30)
+        {
+            PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because receive timeout %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock, uSec - pair.pVistor->nLastRecvSec);
+            // 访问者关闭，发结束消息给Server
+            CloseVistorSocket(pair);
         }
     }
+
+    // 删掉服务端断掉的
+    DelSocketPairFromMap(vecDelPair, mapSocketPair);
 }
 
 int main(int argc, char** argv)
@@ -501,6 +503,8 @@ int main(int argc, char** argv)
 #endif
     }
     printf("%s [Server]监听 %s:%d\n", GetCurTimeStr(), strHost.c_str(), nPort);    //存放所有的socket，包括用于accept的socket。
+
+    unsigned int uLastHeartBeatSec = GetCurSecond();
     CLfrpSocket sListen;
     sListen.sock = sockListen;
     while (true)
@@ -561,12 +565,19 @@ int main(int argc, char** argv)
                 }
             }
 
+            timeval timevalSelect = { 5, 0 };
             //这个操作会被阻塞
 #ifdef _WIN32
-            nRet = select(0, &fdRead, &fdWrite, NULL, NULL);
+            nRet = select(0, &fdRead, &fdWrite, NULL, &timevalSelect);
 #else
-            nRet = select(maxSock + 1, &fdRead, &fdWrite, NULL, NULL);
+            nRet = select(maxSock + 1, &fdRead, &fdWrite, NULL, &timevalSelect);
 #endif
+            if (nRet == 0)
+            {
+                // lfrpSvr和lfrpCli都会发心跳，如果30秒还没数据，认为假连断开
+                CheckSocketTimeout(mapSocketPair);
+            }
+
             if (FD_ISSET(sockListen, &fdRead))
             {
                 //socket可用了，这时accept一定会立刻返回成功或失败 这里需要处理最大连接数

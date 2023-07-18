@@ -68,6 +68,7 @@ enum PackTypeEnum
 {
     PACK_TYPE_AUTH_SERVER = 1,  // 服务登录
     PACK_TYPE_AUTH_VISTOR,      // 访问者登录
+    PACK_TYPE_HEART_BEAT,       // 心跳
     PACK_TYPE_DATA_BEG = 100,   // 数据包类型开始，区间包格式:MaginNum,type,len,SocketID
     PACK_TYPE_DATA,             // 数据包
     PACK_TYPE_DATA_END = 999,   // 数据包类型结束，用于分段结束，也用于业务结束
@@ -129,7 +130,8 @@ public:
     //发送队列
     CVecBuffer vecSendBuf;      // lfrpTun里存AES加密数据，避免重复加解密；其他存原始数据
 
-    unsigned int nAcceptSec;
+    unsigned int nAcceptSec;    // Accept的时间
+    unsigned int nLastRecvSec;  // 最后一次接收数据的时间，有心跳包，防止假连
 
 #ifdef USE_AES
     char EncBuffer[ELEM_BUFFER_SIZE];
@@ -182,6 +184,9 @@ void FetchOnePack(CLfrpSocket* pSocket, char* pBuf);
 
 // 丢弃一个数据包
 void DropOnePack(CLfrpSocket* pSocket);
+
+// 心跳包
+void MakeHeartBeatPack(CBuffer& buf);
 
 // User侧或Bussiness侧异常，组装通知另一侧断开的消息
 void MakeDataEndPack(CBuffer& buf, int nSocketID, int nSeq);    

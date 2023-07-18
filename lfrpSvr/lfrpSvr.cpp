@@ -143,6 +143,11 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapBusinessSvr, fd_set& fdR
                     // 取掉结束包
                     DropOnePack(pTunSocket);
                 }
+                else if (pTunSocket->nType == PACK_TYPE_HEART_BEAT)
+                { // 心跳包
+                    // 取掉包
+                    DropOnePack(pTunSocket);
+                }
                 else
                 { // 不认识的包
                     PRINT_ERROR("%s Svr %s,%d: receive illeage packe type %d size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->nType, pTunSocket->nPackLen);
@@ -173,6 +178,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapBusinessSvr, fd_set& fdR
                 }
                 else if (nRet > 0)
                 {
+                    pSocket->nLastRecvSec = GetCurSecond();
                     int nSeq = GetNextSeq(SEQ_SERVER, pSocket->sock);
                     PRINT_INFO("%s Svr %s,%d: Svr socketID %d recv from BusinessServer pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->first, nRet, nSeq);
 
@@ -427,6 +433,7 @@ int main(int argc, char** argv)
     }
     
     unsigned int uLastTunSec = GetCurSecond();
+    unsigned int uLastHeartBeatSec = GetCurSecond();
     while (true)
     {
         //循环判断是否有请求需要处理
@@ -456,12 +463,26 @@ int main(int argc, char** argv)
 
             if (bSetFD)
             {
+                timeval timevalSelect = { 5, 0 };
                 //这个操作会被阻塞
 #ifdef _WIN32
-                nRet = select(0, &fdRead, &fdWrite, NULL, NULL);
+                nRet = select(0, &fdRead, &fdWrite, NULL, &timevalSelect);
 #else
-                nRet = select(maxSock+ + 1, &fdRead, &fdWrite, NULL, NULL);
+                nRet = select(maxSock+ + 1, &fdRead, &fdWrite, NULL, &timevalSelect);
 #endif
+                if (nRet == 0)
+                {
+                    unsigned int uSec = GetCurSecond();
+                    if (sockTun.sock != INVALID_SOCKET && uSec - uLastHeartBeatSec > 10)
+                    { // 10秒心跳
+                        uLastHeartBeatSec = uSec;
+                        CBuffer buf;
+                        MakeHeartBeatPack(buf);
+                        sockTun.vecSendBuf.push_back(buf);
+                        sockTun.Op = OP_WRITE;
+                    }
+                }
+
                 //其他socket可用了，判断哪些能读，哪些能写
 #ifdef _WIN32
                 if (fdRead.fd_count > 0)
