@@ -416,7 +416,7 @@ int LfrpRecv(CLfrpSocket* pSocket)
     }
     else if (nRet > 0)
     {
-        if (AddTunAESRecvData(pSocket, Buffer, nRet) < 0)
+        if (AddAESRecvData(pSocket, Buffer, nRet) < 0)
             return -1;
     }
     return nRet;
