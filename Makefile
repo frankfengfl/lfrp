@@ -1,4 +1,6 @@
-CFLAGS = -g -m64 -std=c++11 -O2 -march=native
+#CFLAGS = -g -m64 -std=c++17 -march=native
+CFLAGS = -g -m64 -std=c++17 -O2 -march=native
+#CFLAGS = -g -m64 -std=c++11 -O2 -march=native
 #CFLAGS = -g -m64 -std=c++11 -march=native
 targetTun = ./bin/lfrpTun
 targetCli = ./bin/lfrpCli
@@ -8,6 +10,7 @@ targetEchoSvr = ./bin/EchoServer
 TARGETDIR = ./bin
 INCLUDE = -I /usr/include/
 dirlib = -L /usr/lib/
+lib = -lpthread
 
 src = $(wildcard *.cpp)
 objs = $(patsubst %.cpp,%.o,$(src))
@@ -46,11 +49,11 @@ $(targetSvr) : $(objs) $(objsSvr)
 	
 $(targetEchoCli) : $(objsEchoCli)
 	@mkdir -p $(TARGETDIR)
-	g++ $(CFLAGS) $(objsEchoCli) $(dirlib) $(lib) -o $(targetEchoCli) $(INCLUDE)
+	g++ $(CFLAGS) $(objs) $(objsEchoCli) $(dirlib) $(lib) -o $(targetEchoCli) $(INCLUDE)
 	
 $(targetEchoSvr) : $(objsEchoSvr)
 	@mkdir -p $(TARGETDIR)
-	g++ $(CFLAGS) $(objsEchoSvr) $(dirlib) $(lib) -o $(targetEchoSvr) $(INCLUDE)
+	g++ $(CFLAGS) $(objs) $(objsEchoSvr) $(dirlib) $(lib) -o $(targetEchoSvr) $(INCLUDE)
 
 %.o: %.cpp
 	g++ $(CFLAGS) $(INCLUDE) $(lib) $(dirlib) -c $< -o $@ 

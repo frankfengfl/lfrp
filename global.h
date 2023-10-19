@@ -7,6 +7,10 @@
 #include <string.h>
 #include <map>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <shared_mutex>
+#include <condition_variable>
 #ifdef _WIN32
 #include <winsock2.h>
 #else
@@ -18,6 +22,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <sys/epoll.h>
+#include <pthread.h>
+#include <sys/sysinfo.h>
+#include <sys/resource.h>
 
 typedef int SOCKET;
 typedef unsigned int DWORD;
@@ -42,21 +50,28 @@ extern int geterror();
 #define USE_AES
 
 #define LOCAL_IP "127.0.0.1"
-#define DEFAULT_BACKLOG 5
+#define DEFAULT_BACKLOG 128     // backlog太小会导致队列满而使得一些请求被丢弃
 #define MAX_IO_PEND 10
 #define OP_READ 0x10
-#define OP_WRITE 0x20//定义结构体用于储存通信信息
+#define OP_WRITE 0x20//定义结构体用于储存通信信息，注意EPOLL复用了这个标志位做trans
 #define MAGIC_NUMBER 0xFEEFFEEF
 #define SEQ_CLIENT_BEG  10000
 #define SEQ_SERVER_BEG  1000000
 
 #define Print_ErrCode(e) fprintf(stderr,"\n[Server]%s 执行失败: %d\n",e,WSAGetLastError())
-#define PRINT_ERROR printf
-#ifdef _DEBUG
-#define PRINT_INFO  printf
-#else
-#define PRINT_INFO 
-#endif
+
+//#define LOG_TO_FILE
+#ifdef LOG_TO_FILE
+    #define PRINT_ERROR PrintToFile
+    #define PRINT_INFO //PrintToFile
+#else // LOG_TO_FILE
+    #define PRINT_ERROR printf
+    #ifdef _DEBUG
+        #define PRINT_INFO  printf
+    #else
+        #define PRINT_INFO 
+    #endif // _DEBUG
+#endif // LOG_TO_FILE
 
 enum SeqEnum
 {
@@ -112,7 +127,7 @@ public:
 
 public:
     SOCKET sock;
-    DWORD Op;
+    DWORD Op;                   // 注意EPOLL复用了这个标志位做trans
     int nMagicNum;
     int nServiceNumber;          // 服务提供编号，用于区分Business侧提供的服务，认证包带
     int nSocketID;              // 业务客户端建立的SocketID，PACK_TYPE_DATA_BEG包带，通道Elem是临时存下
@@ -174,6 +189,8 @@ bool RemoveDataFromSocketBuffer(char Buffer[], char*& pBuffer, int& nBufLen, int
 // recv封装，用于加入aes以及内存管理
 int LfrpRecv(CLfrpSocket* pSocket);                          // 数据流接收封装，返回值小于0错误，等于0断开，大于0正常
 int LfrpTunAESRecv(CLfrpSocket* pSocket);
+int AddAESRecvData(CLfrpSocket* pSocket, char* Buffer, int nRet);       // 通用获取数据，全解密
+int AddTunAESRecvData(CLfrpSocket* pSocket, char* Buffer, int nRet);    // 通道获取数据，只用解出包头
 
 // 三个服务都是socket对，之间流转数据包
 bool MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket);
@@ -210,12 +227,27 @@ void GetInfoFromBuf(CBuffer& buf, int& nType, int& nLen, int& nSocketID, int& nS
 // 获取最后一个包信息，注意这个函数要求最后的包头至少包含包大小字段
 void GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen);
 
+// 初始化socket
+int InitSocket();
+
 // 连接socket封装
-int ConnectSocket(SOCKET* pSocket, const char* pIPAddress, int nPort);
+int PreConnectSocket(SOCKET& sockCon, const char* pIPAddress, int nPort);
+int ProcssConnectSocket(SOCKET& sockCon, const char* pIPAddress, int nPort);
+int ConnectSocket(SOCKET& sockCon, const char* pIPAddress, int nPort);
+int CheckConnected(SOCKET& sockCon);
+
+// 监听socket
+int ListenSocket(SOCKET& sockListen, const char* pIPAddress, int nPort);
 
 // 判断是否需要等一下再发送，比如缓冲区堵住
 bool IsReSendSocketError(int nError);
 
 unsigned int GetCurSecond();
-const char* GetCurTimeStr();    // 单线程使用
-#endif
+const char* GetCurTimeStr();    // 单线程使用，todo 多线程可能乱码但不至于崩溃
+void InitLog(const char* file);
+void PrintToFile(const char* format, ...);
+
+std::vector<std::string> stringSplit(const std::string& str, char delim);
+std::vector<int> TransStrToInt(std::vector<std::string>& vecStr);
+
+#endif // __GLOBAL_H

@@ -8,6 +8,11 @@
 #ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib,"ws2_32.lib")
+#elif 1/*defined(USE_EPOLL)*/
+#include "../global.h"
+#include "../globalEpoll.h"
+#undef BUFFER_SIZE
+#define closesocket close
 #else
 #include <sys/types.h>      
 #include <sys/socket.h>
@@ -25,7 +30,7 @@ typedef unsigned char BYTE;
 #define INVALID_SOCKET (SOCKET)(~0)
 #define NO_ERROR    0
 
-int geterror() { return errno; }
+static int geterror() { return errno; }
 #define WSAGetLastError() geterror()
 #define closesocket close
 #define max(a,b)            (((a) > (b)) ? (a) : (b))
@@ -34,7 +39,9 @@ int geterror() { return errno; }
 #define IP "127.0.0.1"
 #define DEFAULT_PORT 10001
 #define Print_ErrCode(e) fprintf(stderr,"\n[Server]%s 执行失败: %d\n",e,WSAGetLastError())
-#define DEFAULT_BACKLOG 5
+#ifndef DEFAULT_BACKLOG
+#define DEFAULT_BACKLOG 128     // backlog太小会导致队列满而使得一些请求被丢弃
+#endif
 #define MAX_IO_PEND 10
 
 int curr_size = 0; //当前的句柄数
@@ -60,18 +67,8 @@ typedef struct _socklist
     int  bufLen;
 } Socklist; 
 
-int main(int argc, char** argv)
+int mainSelect()
 {
-    int i = 0;
-    for (i = 0; i < argc; i++)
-    {
-        if (strcmp(argv[i], "-p") == 0 && i + 1 <= argc)
-        {
-            i++;
-            nPort = atoi(argv[i]);
-        }
-    }
-
     int nStartup = 0;
     struct sockaddr_in clientService;
     SOCKET sockListen = INVALID_SOCKET;
@@ -84,7 +81,7 @@ int main(int argc, char** argv)
         Print_ErrCode("WSAStartup()");
         return 1;
     }
-#endif
+#endif //  _WIN32
 
     clientService.sin_family = AF_INET;
     //clientService.sin_addr.s_addr = inet_addr(IP);
@@ -99,7 +96,7 @@ int main(int argc, char** argv)
     }
 #ifdef _WIN32
     u_long type = 1;
-    ioctlsocket(sockListen, FIONBIO, &type);    
+    ioctlsocket(sockListen, FIONBIO, &type);
 #else
     fcntl(sockListen, F_SETFL, O_NONBLOCK);
 #endif
@@ -111,7 +108,7 @@ int main(int argc, char** argv)
         Print_ErrCode("bind()");
         closesocket(sockListen);
         return 1;
-    }    
+    }
     if (SOCKET_ERROR == listen(sockListen, DEFAULT_BACKLOG))
     {
         Print_ErrCode("listen()");
@@ -222,4 +219,132 @@ int main(int argc, char** argv)
             }
         }
     }
+}
+
+#ifdef USE_EPOLL
+typedef std::map<int, CVecBuffer> CSocketDataMap;
+CSocketDataMap* pSockDataMapAry = nullptr;
+
+int EchoSvrRead(int nIndex, int sock, char* pBuffer, int nCount)
+{
+    // Accept后同时可读写，也可以通过pSockDataMapAry转来模拟业务异步
+    CBuffer buf;
+    buf.pBuffer = new char[nCount];
+    memcpy(buf.pBuffer, pBuffer, nCount);
+    buf.nLen = nCount;
+    
+    CSocketDataMap::iterator iter = pSockDataMapAry[nIndex].find(sock);
+    if (iter != pSockDataMapAry[nIndex].end())
+    {
+        CVecBuffer& vecBuf = iter->second;
+        vecBuf.push_back(buf);
+        PRINT_INFO("%s %s,%d: EchoSvrRead socketID %d recv more than one data first size %d and cur size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, vecBuf[0].nLen, nCount);
+    }
+    else
+    {
+        CVecBuffer vecBuf;
+        vecBuf.push_back(buf);
+        pSockDataMapAry[nIndex].insert(std::make_pair(sock, vecBuf));
+    }
+    FireWriteEvent(sock);
+
+    return 0;
+
+    int nRet = send(sock, pBuffer, nCount, LFRP_SEND_FLAGS);
+    if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+    { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
+        PRINT_ERROR("%s %s,%d: send to Tun err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nCount);
+    }
+    else if (nRet == SOCKET_ERROR || nRet == 0)
+    {
+        PRINT_ERROR("%s %s,%d: SocketID %d disconnect because send err %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, nRet);
+    }
+
+    return 0;
+}
+int EchoSvrWrite(int nIndex, int sock)
+{
+    CSocketDataMap::iterator iter = pSockDataMapAry[nIndex].find(sock);
+    if (iter != pSockDataMapAry[nIndex].end())
+    {
+        CVecBuffer& vecBuf = iter->second;
+        for (int i = 0; i < vecBuf.size(); i++)
+        {
+            CBuffer& buf = vecBuf[i];
+            int nRet = send(sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+            if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+            { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
+                PRINT_ERROR("%s %s,%d: send to Tun err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
+            }
+            else if (nRet == SOCKET_ERROR || nRet == 0)
+            {
+                PRINT_ERROR("%s %s,%d: SocketID %d disconnect because send err %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, nRet);
+            }
+            delete[] buf.pBuffer;
+        }
+        vecBuf.clear();
+        pSockDataMapAry[nIndex].erase(iter);
+    }
+    
+    return 0;
+}
+int EchoSvrClose(int nIndex, int sock)
+{
+    //close(sock);
+    CloseSocketInstance(nIndex, sock);
+
+    return 0;
+}
+
+int EchoSvrTimer()
+{
+    PRINT_INFO("%s %s,%d: EchoSvrTimer\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+    CommTimer();
+    return 0;
+
+}
+int mainEchoEpoll()
+{
+    // 初始化socket
+    InitSocket();
+
+    InitLog("./EchoSvr.txt");
+
+    // 初始化epooll工作线程相关
+    SetBusWorkerCallBack(EchoSvrRead, EchoSvrWrite, EchoSvrClose, nullptr, nullptr, EchoSvrTimer);
+    InitWorkerThreads();
+    pSockDataMapAry = new CSocketDataMap[nThreadCount];
+
+    // 监听端口
+    SOCKET sockListen = INVALID_SOCKET;
+    int nRet = EpollListenSocket(epollfd, sockListen, IP, nPort);
+    if (nRet != 0)
+    {
+        return 1;
+    };
+    
+    mainEpoll(epollfd, sockListen);
+    bExitPorcess = true;
+
+    return 0;
+}
+#endif
+
+int main(int argc, char** argv)
+{
+    int i = 0;
+    for (i = 0; i < argc; i++)
+    {
+        if (strcmp(argv[i], "-p") == 0 && i + 1 <= argc)
+        {
+            i++;
+            nPort = atoi(argv[i]);
+        }
+    }
+    
+#ifdef USE_EPOLL
+    mainEchoEpoll();
+#else
+    mainSelect();
+#endif
 }

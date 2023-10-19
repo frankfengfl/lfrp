@@ -9,6 +9,7 @@
 #include <vector>
 #include "../global.h"
 #include "../aes.h"
+#include "../globalEpoll.h"
 
 #pragma comment(lib,"ws2_32.lib")
 
@@ -96,7 +97,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
             else
             {
 #ifdef USE_AES
-                if (MoveSendAESPack(pair.pServer, pair.pVistor))
+                if (pair.pVistor && MoveSendAESPack(pair.pServer, pair.pVistor))
                 {
                     PRINT_INFO("%s Tun %s,%d: Server send pack to Vistor\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                     pair.pVistor->Op = OP_WRITE;
@@ -134,7 +135,7 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
             else
             {
 #ifdef USE_AES
-                if (MoveSendAESPack(pair.pVistor, pair.pServer))
+                if (pair.pServer && MoveSendAESPack(pair.pVistor, pair.pServer))
                 {
                     PRINT_INFO("%s Svr %s,%d: Vistor send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                     pair.pServer->Op = OP_WRITE;
@@ -424,86 +425,9 @@ void CheckSocketTimeout(CSocketPairMap& mapSocketPair)
     DelSocketPairFromMap(vecDelPair, mapSocketPair);
 }
 
-int main(int argc, char** argv)
+int mainSelect(SOCKET& sockListen)
 {
-    PRINT_ERROR("%s Tun used as 'lfrpTun -p ListenPort -k AESKey', default is 'lfrpTun -p %d -k %s'\n", GetCurTimeStr(), nPort, strAesKey.c_str());
-    int i = 0;
-    for (i = 0; i < argc; i++)
-    {
-        if (strcmp(argv[i], "-h") == 0 && i + 1 <= argc)
-        {
-            i++;
-            strHost = argv[i];
-        }
-        else if (strcmp(argv[i], "-p") == 0 && i + 1 <= argc)
-        {
-            i++;
-            nPort = atoi(argv[i]);
-        }
-        else if (strcmp(argv[i], "-k") == 0 && i + 1 <= argc)
-        {
-            i++;
-            strAesKey = argv[i];
-        }
-    }
-
-    // 初始化AES密钥信息
-    CAES::GlobalInit(strAesKey.c_str());
-
-    int nStartup = 0;
-    struct sockaddr_in clientService;
-    SOCKET sockListen = INVALID_SOCKET;
     int nRet = 0;
-#ifdef _WIN32
-    WSADATA wsaData;
-    if (0 != (nStartup = WSAStartup(MAKEWORD(2, 2), &wsaData)))
-    {
-        WSASetLastError(nStartup); //WSAStartup不会自动设置错误代码
-        Print_ErrCode("WSAStartup()");
-        return 1;
-    }
-#endif
-    clientService.sin_family = AF_INET;
-    //clientService.sin_addr.s_addr = inet_addr(strHost.c_str());
-    clientService.sin_addr.s_addr = htonl(INADDR_ANY);  // 通道服务不限制
-    clientService.sin_port = htons(nPort);
-    if (INVALID_SOCKET ==
-        (sockListen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP))
-        )
-    {
-        Print_ErrCode("socket()");
-        return 1;
-    }
-#ifdef _WIN32
-    u_long type = 1;
-    ioctlsocket(sockListen, FIONBIO, &type);
-#else
-    fcntl(sockListen, F_SETFL, O_NONBLOCK);
-#endif
-    if (SOCKET_ERROR == bind(sockListen,
-        (sockaddr*)&clientService,
-        sizeof(clientService)
-    ))
-    {
-        Print_ErrCode("bind()");
-#ifdef _WIN32
-        closesocket(sockListen);
-#else
-        close(sockListen);
-#endif
-        return 1;
-    }
-    if (SOCKET_ERROR == listen(sockListen, DEFAULT_BACKLOG))
-    {
-        Print_ErrCode("listen()");
-#ifdef _WIN32
-        closesocket(sockListen);
-#else
-        close(sockListen);
-#endif
-    }
-    printf("%s [Server]监听 %s:%d\n", GetCurTimeStr(), strHost.c_str(), nPort);    //存放所有的socket，包括用于accept的socket。
-
     unsigned int uLastHeartBeatSec = GetCurSecond();
     CLfrpSocket sListen;
     sListen.sock = sockListen;
@@ -613,5 +537,475 @@ int main(int argc, char** argv)
             }
         }
     }
+
+    return nRet;
+}
+
+#ifdef USE_EPOLL
+CSocketPairMap* pSocketPairMapAry = nullptr;    // 提供服务和访问者对数组，一个工作线程使用一个Map
+
+// bOnlyDel控制是否Close
+void DeleteSocketPair(CSocketPairMap& mapSocketPair, int nServiceNum, bool bOnlyDel)
+{
+    CSocketPair pair;
+    pair.pServer = pair.pVistor = nullptr;
+    iterSockets iter = mapSocketPair.find(nServiceNum);
+    if (iter != mapSocketPair.end())
+    {  // 业务Number有在用，因为整对关掉，不需要通知，Server和Vistor两端断开会清理
+        pair = iter->second;
+        mapSocketPair.erase(iter);
+    }
+    if (pair.pServer)
+    {
+        if (!bOnlyDel)
+        {
+            CloseLfrpSocket(pair.pServer);
+        }
+        delete pair.pServer;
+    }
+    if (pair.pVistor)
+    {
+        if (!bOnlyDel)
+        {
+            CloseLfrpSocket(pair.pVistor);
+        }
+        delete pair.pVistor;
+    }
+}
+
+int ProcessFirstReadPack(int nIndex, int sock, CLfrpSocket* pSocket)
+{
+    if (pSocket->nType == PACK_TYPE_AUTH_SERVER)
+    {
+        PRINT_INFO("%s Tun %s,%d: ProcessFirstReadPack SocketID %d ServiceNumber %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, pSocket->nServiceNumber);
+        DeleteSocketPair(pSocketPairMapAry[nIndex], pSocket->nServiceNumber, false);
+
+        CSocketPair pair;
+        pair.pServer = pSocket;
+        pair.pVistor = nullptr;
+        pSocketPairMapAry[nIndex].insert(std::make_pair(pSocket->nServiceNumber, pair));
+
+        // 取掉认证包
+        char* pBuffer = new char[pSocket->nPackLen];
+        FetchOnePack(pSocket, pBuffer);
+        delete[] pBuffer;
+    }
+    else if (pSocket->nType == PACK_TYPE_AUTH_VISTOR)
+    {
+        iterSockets iter = pSocketPairMapAry[nIndex].find(pSocket->nServiceNumber);
+        if (iter == pSocketPairMapAry[nIndex].end())
+        {
+            PRINT_ERROR("%s Tun %s,%d: new SocketID %d disconnect because no server number find\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock);
+            // 没有服务，失败
+            CloseLfrpSocket(pSocket);
+            delete pSocket;
+            return -1;
+        }
+        else if (iter->second.pServer)
+        {
+            if (iter->second.pVistor)
+            { // 删除之前的Vistor，并通知业务
+                PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because new Vistor connect\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->second.pVistor->sock);
+                CloseVistorSocket(iter->second);
+                FireWriteEvent(iter->second.pServer->sock);
+            }
+            iter->second.pVistor = pSocket;
+
+            // 取掉认证包
+            char* pBuffer = new char[pSocket->nPackLen];
+            FetchOnePack(pSocket, pBuffer);
+            delete[] pBuffer;
+        }
+    }
+    else // if (pSocket->nType == PACK_TYPE_DATA)
+    {
+        PRINT_ERROR("%s Tun %s,%d: new SocketID %d disconnect because first pack type is not auth type\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock);
+        // 第一个包必须认证，否则断开
+        CloseLfrpSocket(pSocket);
+        delete pSocket;
+        return -1;
+    }
+    return 0;
+}
+
+// 仅处理已读取的数据
+int TunProcessFirstRead(int nIndex, int sock, CLfrpSocket* pSocket)
+{
+    if (pSocket == nullptr)
+    {
+        pSocket = GetSockFromInstanceMap(sock);
+    }
+    if (pSocket == nullptr)
+    {
+        PRINT_ERROR("%s Tun %s,%d: SocketID %d cant find instance\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
+        return 0;
+    }
+    
+    // 处理第一个认证包
+    if (ProcessFirstReadPack(nIndex, sock, pSocket) < 0)
+    { // 解析第一个包失败，不再往下转包
+        return -1;
+    }
+
+    CSocketPairMap::iterator iter = pSocketPairMapAry[nIndex].find(pSocket->nServiceNumber);
+    if (iter == pSocketPairMapAry[nIndex].end())
+    {
+        PRINT_ERROR("%s Tun %s,%d: SocketID %d cant find nServiceNumber\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
+        return -1;
+    }
+
+    CSocketPair& pair = iter->second;
+    if (pair.pServer && pair.pServer->sock == sock)
+    {
+        if (pair.pVistor && MoveSendAESPack(pair.pServer, pair.pVistor))
+        {
+            PRINT_INFO("%s Tun %s,%d: Server send pack to Vistor\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+            //pair.pVistor->Op = OP_WRITE;
+            FireWriteEvent(pair.pVistor->sock);
+        }
+    }
+    else if (pair.pVistor && pair.pVistor->sock == sock)
+    {
+        if (pair.pServer && MoveSendAESPack(pair.pVistor, pair.pServer))
+        {
+            PRINT_INFO("%s Svr %s,%d: Vistor send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+            //pair.pServer->Op = OP_WRITE;
+            FireWriteEvent(pair.pServer->sock);
+        }
+    }
+    return 0;
+}
+
+int TunRead(int nIndex, int sock, char* pBuffer, int nCount)
+{
+    // 类似上面的ProcessRead区分业务处理
+    int nServiceNum = GetServiceNum(sock);
+    int nThreadIndex = nServiceNum == -1 ? GetThreadIndexByNum(sock) : GetThreadIndexByNum(nServiceNum);
+    std::vector<int> vecDelPair;
+    if (nServiceNum != -1)
+    {
+        CSocketPairMap::iterator iter = pSocketPairMapAry[nIndex].find(nServiceNum);
+        CSocketPair& pair = iter->second;
+        if (pair.pServer && pair.pServer->sock == sock)
+        {
+            int nRet = AddTunAESRecvData(pair.pServer, pBuffer, nCount);
+            if (nRet <= 0)
+            {
+                // ServerTun断开，成对关掉，不需要通知，Server和Vistor两端断开会清理
+                CloseServerSocket(pair);
+                DeleteSocketPair(pSocketPairMapAry[nIndex], nServiceNum,true);
+            }
+            else
+            {
+                if (pair.pVistor && MoveSendAESPack(pair.pServer, pair.pVistor))
+                {
+                    PRINT_INFO("%s Tun %s,%d: Server send pack to Vistor\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+                    //pair.pVistor->Op = OP_WRITE;
+                    FireWriteEvent(pair.pVistor->sock);
+                }
+            }
+        }
+        else if (pair.pVistor && pair.pVistor->sock == sock)
+        {
+            int nRet = AddTunAESRecvData(pair.pVistor, pBuffer, nCount);
+            if (nRet <= 0)
+            {
+                PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because read from Server err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock, nRet, WSAGetLastError());
+                CloseVistorSocket(pair);
+            }
+            else
+            {
+                if (pair.pServer && MoveSendAESPack(pair.pVistor, pair.pServer))
+                {
+                    PRINT_INFO("%s Svr %s,%d: Vistor send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+                    //pair.pServer->Op = OP_WRITE;
+                    FireWriteEvent(pair.pServer->sock);
+                }
+            }
+        }
+    }
+    else
+    { // 新请求？比如vistor被Server断开删除了仍收到读消息怎么办？按照第一个包解析非法退出？
+        CLfrpSocket* pSocket = GetSockFromInstanceMap(sock); // todo, 实例放工作线程建立可以减少阻塞，但是要管理新连接不发请求的关掉，避免攻击
+        if (pSocket == nullptr)
+        {
+            PRINT_ERROR("%s Tun %s,%d: new SocketID %d cant find instance\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
+            return 0;
+        }
+        
+        int nRet = AddTunAESRecvData(pSocket, pBuffer, nCount);
+        if (nRet <= 0)
+        {
+            PRINT_ERROR("%s Tun %s,%d: new SocketID %d disconnect because read from Server err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nRet, WSAGetLastError());
+            // 新socket有问题，直接清除删掉
+            CloseLfrpSocket(pSocket);
+            delete pSocket;
+        }
+        else
+        {
+            // 包收完全了
+            if (pSocket->nBufLen >= pSocket->nPackLen && pSocket->nPackLen > 0 && pSocket->nPackLen > 0)
+            {
+                PRINT_INFO("%s Tun %s,%d: new socket recv pack size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet);
+                // 新连接设置到对应的线程
+                int nThreadIndex = GetThreadIndexByNum(pSocket->nServiceNumber);
+                SetServiceNum(sock, pSocket->nServiceNumber);
+
+                // 新连接如果线程不对应，需要转到对应线程处理
+                if (nThreadIndex != nIndex)
+                { // 已经收了包但不处理，等切换到SN线程再处理
+                    FireTransEvent(sock);
+                    return 0;
+                }
+                
+                TunProcessFirstRead(nIndex, sock, pSocket);
+            }
+        }
+    }
+    return 0;
+}
+
+int TunWrite(int nIndex, int sock)
+{
+    // 类似上面的ProcessRead区分业务处理
+    int nRet = 0;
+    int nServiceNum = GetServiceNum(sock);
+    int nThreadIndex = nServiceNum == -1 ? GetThreadIndexByNum(sock) : GetThreadIndexByNum(nServiceNum);
+    if (nThreadIndex != nIndex)
+    { // Socket可用会收到可读和可写，可读会trans，但第一个可写会进这里不匹配
+        return 0;
+    }
+    std::vector<int> vecDelPair;
+    if (nServiceNum != -1)
+    {
+        CSocketPairMap::iterator iter = pSocketPairMapAry[nIndex].find(nServiceNum);
+        if (iter != pSocketPairMapAry[nIndex].end())
+        {
+            CSocketPair& pair = iter->second;
+            if (pair.pServer && pair.pServer->sock == sock)
+            {
+                bool nError = false;
+                for (int i = 0; i < pair.pServer->vecSendBuf.size(); i++)
+                {
+                    CBuffer& buf = pair.pServer->vecSendBuf[i];
+
+                    // 调试日志
+                    int nType, nPakLen, nSocketID, nSeq;
+                    CAES cAes;
+                    CBuffer bufDec;
+                    bufDec.nLen = 0;
+                    bufDec.pBuffer = (char*)cAes.Decrypt(buf.pBuffer, buf.nLen, bufDec.nLen); // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+                    GetInfoFromBuf(bufDec, nType, nPakLen, nSocketID, nSeq);
+                    delete[] bufDec.pBuffer; // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+                    PRINT_INFO("%s Tun %s,%d: Server send socketID %d pack to BusServer size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
+
+                    //开始send
+                    nRet = send(pair.pServer->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                    if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                    {
+                        PRINT_ERROR("%s Tun %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
+                        // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
+                        nError = true;
+                        CVecBuffer& vecBuf = pair.pServer->vecSendBuf;
+                        while (i > 0)
+                        {
+                            i--;
+                            vecBuf.erase(vecBuf.begin());
+                        }
+                        break;
+                    }
+                    // 发送成功删掉数据内容
+                    delete[] buf.pBuffer;
+                    buf.pBuffer = nullptr;
+                    buf.nLen = 0;
+
+                    if (nRet == SOCKET_ERROR || nRet == 0)
+                    {
+                        PRINT_ERROR("%s Tun %s,%d: send to Server err %d to disconnect wsaerr %x", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet, WSAGetLastError());
+                        // ServerTun断开，成对关掉，不需要通知，Server和Vistor两端断开会清理
+                        CloseServerSocket(pair);
+                        DeleteSocketPair(pSocketPairMapAry[nIndex], nServiceNum, true);
+
+                        nError = true;
+                        break;  // socket异常不发剩余数据
+                    }
+                }
+                if (!nError)
+                {
+                    pair.pServer->vecSendBuf.clear();
+                    //pair.pServer->Op = OP_READ;
+                }
+            }
+            else if (pair.pVistor && pair.pVistor->sock == sock)
+            {
+                bool nError = false;
+                for (int i = 0; i < pair.pVistor->vecSendBuf.size(); i++)
+                {
+                    CBuffer& buf = pair.pVistor->vecSendBuf[i];
+
+                    // 调试日志
+                    int nType, nPakLen, nSocketID, nSeq;
+                    CAES cAes;
+                    CBuffer bufDec;
+                    bufDec.nLen = 0;
+                    //bufDec.pBuffer = (char*)cAes.Decrypt(buf.pBuffer, buf.nLen, bufDec.nLen); // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+                    GetInfoFromBuf(bufDec, nType, nPakLen, nSocketID, nSeq);
+                    //delete[] bufDec.pBuffer; // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+                    PRINT_INFO("%s Tun %s,%d: Vistor send socketID %d pack to Client size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
+
+                    //开始send
+                    nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                    if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                    {
+                        PRINT_ERROR("%s Tun %s,%d: send to Vistor err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
+                        // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
+                        nError = true;
+                        CVecBuffer& vecBuf = pair.pVistor->vecSendBuf;
+                        while (i > 0)
+                        {
+                            i--;
+                            vecBuf.erase(vecBuf.begin());
+                        }
+                        break;
+                    }
+                    delete[] buf.pBuffer;
+                    buf.pBuffer = nullptr;
+                    buf.nLen = 0;
+
+                    if (nRet == SOCKET_ERROR || nRet == 0)
+                    {
+                        PRINT_ERROR("%s Tun %s,%d: send to Vistor err %d to disconnect wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nRet, WSAGetLastError());
+                        // 访问者关闭，发结束消息给Server
+                        CloseVistorSocket(pair);
+
+                        nError = true;
+                        break; // socket异常不发剩余数据
+                    }
+                }
+                if (!nError)
+                {
+                    pair.pVistor->vecSendBuf.clear();
+                    //pair.pVistor->Op = OP_READ;
+                }
+            }
+        }
+    }
+    return nRet;
+}
+
+int TunClose(int nIndex, int sock)
+{
+    CLfrpSocket* pSocket = GetSockFromInstanceMap(sock);
+    if (pSocket == nullptr)
+    {
+        PRINT_INFO("%s Tun %s,%d: SocketID %d cant find instance\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
+        return 0;
+    }
+
+    // 类似上面的ProcessRead区分业务处理
+    int nRet = 0;
+    int nServiceNum = GetServiceNum(sock);
+    int nThreadIndex = nServiceNum == -1 ? GetThreadIndexByNum(sock) : GetThreadIndexByNum(nServiceNum);
+    if (nThreadIndex != nIndex)
+    { // Socket可用会收到可读和可写，可读会trans，但第一个可写会进这里不匹配
+        PRINT_ERROR("%s Tun %s,%d: TunClose SocketID %d thread index %d error\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, nIndex);
+        return 0;
+    }
+    
+    if (nServiceNum != -1)
+    {
+        CSocketPairMap::iterator iter = pSocketPairMapAry[nIndex].find(nServiceNum);
+        if (iter != pSocketPairMapAry[nIndex].end())
+        {
+            CSocketPair& pair = iter->second;
+            if (pair.pServer && pair.pServer->sock == sock)
+            {
+                PRINT_ERROR("%s Tun %s,%d: server socketID %d close\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
+                // ServerTun断开，成对关掉，不需要通知，Server和Vistor两端断开会清理
+                CloseServerSocket(pair);
+                DeleteSocketPair(pSocketPairMapAry[nIndex], nServiceNum, true);
+                return 0;
+            }
+            else if (pair.pVistor && pair.pVistor->sock == sock)
+            {
+                PRINT_ERROR("%s Tun %s,%d: cli socketID %d close\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
+                // 访问者关闭，发结束消息给Server
+                CloseVistorSocket(pair);
+                return 0;
+            }
+        }
+    }
+
+    PRINT_ERROR("%s Tun %s,%d: can't find socketID %d", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
+    CloseSocketInstance(nIndex, sock);
+
+    return -1;
+}
+
+int TunTimer()
+{
+    CommTimer();
+    return 0;
+}
+#endif
+
+int main(int argc, char** argv)
+{
+    int nRet = 0;
+    PRINT_ERROR("%s Tun used as 'lfrpTun -p ListenPort -k AESKey', default is 'lfrpTun -p %d -k %s'\n", GetCurTimeStr(), nPort, strAesKey.c_str());
+    int i = 0;
+    for (i = 0; i < argc; i++)
+    {
+        if (strcmp(argv[i], "-h") == 0 && i + 1 <= argc)
+        {
+            i++;
+            strHost = argv[i];
+        }
+        else if (strcmp(argv[i], "-p") == 0 && i + 1 <= argc)
+        {
+            i++;
+            nPort = atoi(argv[i]);
+        }
+        else if (strcmp(argv[i], "-k") == 0 && i + 1 <= argc)
+        {
+            i++;
+            strAesKey = argv[i];
+        }
+    }
+
+    // 初始化AES密钥信息
+    CAES::GlobalInit(strAesKey.c_str());
+
+    // 初始化socket
+    InitSocket();
+
+#ifdef USE_EPOLL
+    InitLog("./Tun.txt");
+    // 初始化epooll工作线程相关
+    SetBusWorkerCallBack(TunRead, TunWrite, TunClose, TunProcessFirstRead, nullptr, TunTimer);
+    InitWorkerThreads();
+    pSocketPairMapAry = new CSocketPairMap[nThreadCount];
+#endif
+
+    // 监听端口
+    SOCKET sockListen = INVALID_SOCKET;
+#ifdef USE_EPOLL
+    nRet = EpollListenSocket(epollfd, sockListen, strHost.c_str(), nPort);
+    if (nRet != 0)
+    {
+        return 1;
+    };
+
+    mainEpoll(epollfd, sockListen);
+    bExitPorcess = true;
+#else
+    nRet = ListenSocket(sockListen, strHost.c_str(), nPort);
+    if (nRet != 0)
+    {
+        return 1;
+    };
+
+    mainSelect(sockListen);
+#endif
 }
 

@@ -133,11 +133,13 @@
   <ItemGroup>
     <ClCompile Include="..\aes.cpp" />
     <ClCompile Include="..\global.cpp" />
+    <ClCompile Include="..\globalEpoll.cpp" />
     <ClCompile Include="lfrpTun.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\aes.h" />
     <ClInclude Include="..\global.h" />
+    <ClInclude Include="..\globalEpoll.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
