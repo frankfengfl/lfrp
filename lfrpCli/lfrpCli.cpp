@@ -518,18 +518,21 @@ int mainSelect(SOCKET& sockListen)
 }
 
 #ifdef USE_EPOLL
+#include <atomic>
 CSocketMap* pSvrMapAry = nullptr;
+std::atomic<int> nCliVIDCreator(0);
 
 void SendNewClientBegin(int nIndex, CLfrpSocket* pSocket, CLfrpSocket* pTunSocket)
 {
     CBuffer buf;
     buf.pBuffer = new char[PACK_SIZE_DATA_BEG];
     buf.nLen = PACK_SIZE_DATA_BEG;
+    buf.uCreateTime = GetCurMilliSecond();
     int* pData = (int*)buf.pBuffer;
     pData[0] = MAGIC_NUMBER;
     pData[1] = PACK_TYPE_DATA_BEG;
     pData[2] = PACK_SIZE_DATA_BEG;
-    pData[3] = pSocket->sock;
+    pData[3] = pSocket->nSocketID;
     pData[4] = GetNextSeq(nIndex, SEQ_CLIENT, pSocket->sock);
     pTunSocket->vecSendBuf.push_back(buf);
     pTunSocket->Op = OP_WRITE;
@@ -538,6 +541,7 @@ void SendNewClientBegin(int nIndex, CLfrpSocket* pSocket, CLfrpSocket* pTunSocke
 void DoBusSocketErr(int nIndex, CLfrpSocket* pSocket, CLfrpSocket* pTunSocket)
 {
     CBuffer buf;
+    buf.uCreateTime = GetCurMilliSecond();
     int nSeq = GetNextSeq(SEQ_CLIENT, pSocket->sock);
     RemoveSeqKey(nIndex, pSocket->sock);
     MakeDataEndPack(buf, pSocket->nSocketID, nSeq);
@@ -545,12 +549,13 @@ void DoBusSocketErr(int nIndex, CLfrpSocket* pSocket, CLfrpSocket* pTunSocket)
     {
         pTunSocket->vecSendBuf.push_back(buf);
         //pTunSocket->Op = OP_WRITE;
+        FireWriteEvent(pTunSocket->sock);
     }
 }
 
 int GetCliServiceNum(CLfrpSocket* pSocket)
 {
-    // 根据sock决定使用那个ServiceNumber
+    // 根据sock决定使用那个ServiceNumber，虽然通道使用VID，但这个是工作线程分配，不影响
     return vecServieNumber[pSocket->sock % vecServieNumber.size()];
 }
 int GetCliThreadIndex(CLfrpSocket* pSocket)
@@ -564,10 +569,16 @@ int CliPostAccept(CLfrpSocket* pSocket)
     if (pSocket == nullptr)
         return -1;
 
-    pSocket->nSocketID = pSocket->sock;             // 设置nSocketID
+    //pSocket->nSocketID = pSocket->sock;             // 设置nSocketID
+    pSocket->nSocketID = nCliVIDCreator++;
+    if (pSocket->nSocketID == INVALID_SOCKET)
+    { // 0是默认值，不使用，循环到了重新分配
+        pSocket->nSocketID = nCliVIDCreator++;
+    }
     pSocket->nServiceNumber = GetCliServiceNum(pSocket);
     // 因为这个比EpollAdd早，所以socket可用的Fire肯定比这个晚，在Trans里做预处理
     SetServiceNum(pSocket->sock, pSocket->nServiceNumber);
+    PRINT_INFO("%s %s,%d: SocketID %d use VID %d ServiceNum %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, pSocket->nSocketID, pSocket->nServiceNumber);
     FireTransEvent(pSocket->sock); 
     return 0;
 }
@@ -592,6 +603,7 @@ int CliTrans(int nIndex, int sock, CLfrpSocket* pSocket)
         pSocket->Op |= OP_TRANS;
         if (pSocket->Op | OP_WRITE)
         {
+            PRINT_INFO("%s Cli %s,%d: Tun socketID %d prepare to SendTunLogin\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
             SendTunLogin(pSocket);
             pSocket->Op = 0;
             FireWriteEvent(sock);
@@ -604,7 +616,7 @@ int CliTrans(int nIndex, int sock, CLfrpSocket* pSocket)
         int nServiceNum = -1;
         if (pSocket)
         {
-            nServiceNum = GetCliServiceNum(pSocket);
+            nServiceNum = pSocket->nServiceNumber; //  GetCliServiceNum(pSocket);
         }
         else
         {
@@ -701,8 +713,9 @@ int CliRead(int nIndex, int sock, char* pBuffer, int nCount)
                     else
                     {
                         // 客户侧连接失败，需要通知服务侧清掉这条连接，此时SocketID用包里的，seq为0
-                        //DoBusSocketErr(pSocket, pTunSocket);
+                        //DoBusSocketErr(nIndex, pSocket, pTunSocket);
                         CBuffer buf;
+                        buf.uCreateTime = GetCurMilliSecond();
                         MakeDataEndPack(buf, pTunSocket->nSocketID, 0);
                         if (pTunSocket && pTunSocket->sock != INVALID_SOCKET)
                         {
@@ -750,16 +763,17 @@ int CliRead(int nIndex, int sock, char* pBuffer, int nCount)
             //PRINT_INFO("%s Cli %s,%d: Svr socketID %d recv pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nCount, nSeq);
             // todo, 注释掉下面的代码
             std::string str(pBuffer, nCount);
-            PRINT_INFO("%s Cli %s,%d: Svr socketID %d recv pack size %d:%s seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nCount, str.c_str(), nSeq);
+            PRINT_INFO("%s Cli %s,%d: Svr socketID %d recv pack size %d:%s seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->nSocketID, nCount, str.c_str(), nSeq);
 
             CBuffer buf;
             buf.pBuffer = new char[PACK_SIZE_DATA + nCount];
             buf.nLen = PACK_SIZE_DATA + nCount;
+            buf.uCreateTime = GetCurMilliSecond();
             int* pData = (int*)buf.pBuffer;
             pData[0] = MAGIC_NUMBER;
             pData[1] = PACK_TYPE_DATA;
             pData[2] = buf.nLen;
-            pData[3] = pSocket->sock;
+            pData[3] = pSocket->nSocketID;
             pData[4] = nSeq;
             memcpy(buf.pBuffer + PACK_SIZE_DATA, pBuffer, nCount);
             pTunSocket->vecSendBuf.push_back(buf);
@@ -780,7 +794,7 @@ int CliWrite(int nIndex, int sock)
     CLfrpSocket* pSocket = GetSockFromInstanceMap(sock);
     if (pSocket == nullptr)
     {
-        PRINT_ERROR("%s Tun %s,%d: SocketID %d cant find instance\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
+        PRINT_INFO("%s Tun %s,%d: SocketID %d cant find instance\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
         return 0;
     }
 
@@ -801,6 +815,7 @@ int CliWrite(int nIndex, int sock)
         pSocket->Op |= OP_WRITE;
         if (pSocket->Op & OP_TRANS)
         {
+            PRINT_INFO("%s Cli %s,%d: Tun socketID %d prepare to SendTunLogin\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
             SendTunLogin(pSocket);
             pSocket->Op = 0;
             FireWriteEvent(sock);
@@ -817,11 +832,32 @@ int CliWrite(int nIndex, int sock)
                 GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
                 PRINT_INFO("%s Cli %s,%d: Tun send socketID %d pack to TunServer size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
+                // 判断所在socket是否正常，数据是否需要发送
+                //CLfrpSocket* pSocket = GetSockFromInstanceMap(nSocketID);
+                //if (pSocket)
+                //{ // 
+                //    //uint64_t uTimeRange = buf.uCreateTime - pSocket->uCreateTime;
+                //    //if (uTimeRange > 0x7FFFFFFF )
+                //    //{ // buf创建时间比socket创建还要早（负数转成大正数），是复用socket导致，需要丢弃
+                //    //    // todo, 下面注释改成INFO级别
+                //    //    PRINT_ERROR("%s Cli %s,%d: socketID %d resued\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID);
+                //    //    delete[] buf.pBuffer;
+                //    //    continue;
+                //    //}
+                //}
+                //else
+                //{ // 如果socket已经销毁，不需要发送
+                //    delete[] buf.pBuffer;
+                //    continue;
+                //}
+
                 // 发送前加密
                 char* pSendBuffer = buf.pBuffer;
                 int nSendLen = buf.nLen;
+#ifdef USE_AES
                 CAES cAes;
                 pSendBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nSendLen, true);
+#endif
                 //开始send
                 nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
                 if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
@@ -836,7 +872,9 @@ int CliWrite(int nIndex, int sock)
                     }
                     break;
                 }
+#ifdef USE_AES
                 delete[] pSendBuffer;
+#endif
                 delete[] buf.pBuffer;
                 buf.pBuffer = nullptr;
                 buf.nLen = 0;
@@ -846,6 +884,8 @@ int CliWrite(int nIndex, int sock)
                     PRINT_ERROR("%s Cli %s,%d: Tun SocketID %d disconnect because send err %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->sock, nRet);
                     // Server关闭了
                     CloseLfrpSocket(pTunSocket);
+                    delete pTunSocket;
+                    SetSockBySN(nServiceNum, INVALID_SOCKET);
                     // 通道关闭，所有客户侧连接清掉
                     for (CSocketMap::iterator iter = mapSvr.begin(); iter != mapSvr.end(); iter++)
                     {
@@ -874,7 +914,7 @@ int CliWrite(int nIndex, int sock)
         }
     }
     else
-    { // 写数据到业务服务
+    { // 写数据到业务客户端
         CLfrpSocket* pTunSocket = GetSockFromInstanceMap(nSNSock);
         if (pTunSocket)
         {
@@ -914,6 +954,7 @@ int CliWrite(int nIndex, int sock)
                             mapSvr.erase(iter);
                         }
                         CloseLfrpSocket(pSocket);
+                        delete pSocket;
                         nError = true;
                         break; // socket异常不发剩余数据
                     }
@@ -937,7 +978,7 @@ int CliClose(int nIndex, int sock)
     CLfrpSocket* pSocket = GetSockFromInstanceMap(sock);
     if (pSocket == nullptr)
     {
-        PRINT_ERROR("%s Tun %s,%d: SocketID %d cant find instance\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
+        PRINT_INFO("%s Tun %s,%d: SocketID %d cant find instance\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock);
         return 0;
     }
 
@@ -949,6 +990,18 @@ int CliClose(int nIndex, int sock)
         CloseLfrpSocket(pSocket);
         delete pSocket;
         SetSockBySN(nServiceNum, INVALID_SOCKET);
+
+        // 通道关闭，所有客户侧连接清掉
+        for (CSocketMap::iterator iter = mapSvr.begin(); iter != mapSvr.end(); iter++)
+        {
+            if (iter->second->sock != INVALID_SOCKET)
+            {
+                PRINT_ERROR("%s Cli %s,%d: Svr SocketID %d disconnect because tun socket disconnect\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->second->sock);
+                CloseLfrpSocket(iter->second);
+                delete iter->second;
+            }
+        }
+        mapSvr.clear();
 
         // 发送通道重连通知
         //FireConnectEvent(nServiceNum);
@@ -962,7 +1015,7 @@ int CliClose(int nIndex, int sock)
         if (pTunSocket)
         {
             DoBusSocketErr(nIndex, pSocket, pTunSocket);
-            FireWriteEvent(pTunSocket->sock);
+            //FireWriteEvent(pTunSocket->sock);
         }
         CSocketMap& mapSvr = pSvrMapAry[nIndex];
         CSocketMap::iterator iter = mapSvr.find(pSocket->nSocketID);

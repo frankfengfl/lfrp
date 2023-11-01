@@ -50,7 +50,7 @@ extern int geterror();
 #define USE_AES
 
 #define LOCAL_IP "127.0.0.1"
-#define DEFAULT_BACKLOG 128     // backlog太小会导致队列满而使得一些请求被丢弃
+#define DEFAULT_BACKLOG 10240   //128     // backlog太小会导致队列满而使得一些请求被丢弃
 #define MAX_IO_PEND 10
 #define OP_READ 0x10
 #define OP_WRITE 0x20//定义结构体用于储存通信信息，注意EPOLL复用了这个标志位做trans
@@ -93,7 +93,11 @@ enum PackTypeEnum
 };
 
 
+#ifdef _WIN32
 #define ELEM_BUFFER_SIZE    1024*1024   // 增大内容避免不停new内存
+#else
+#define ELEM_BUFFER_SIZE    16*1024   // 增大内容避免不停new内存
+#endif
 #define RECV_BUFFER_SIZE    10*1024        // socket接受一次大小
 #define BUFFER_SIZE 1024
 #define PACK_SIZE_HEADER 12
@@ -113,6 +117,7 @@ struct CBuffer
 {
     int nLen;
     char* pBuffer;
+    uint64_t uCreateTime;
 };
 typedef std::vector<CBuffer> CVecBuffer;
 
@@ -130,7 +135,9 @@ public:
     DWORD Op;                   // 注意EPOLL复用了这个标志位做trans
     int nMagicNum;
     int nServiceNumber;          // 服务提供编号，用于区分Business侧提供的服务，认证包带
-    int nSocketID;              // 业务客户端建立的SocketID，PACK_TYPE_DATA_BEG包带，通道Elem是临时存下
+    int nSocketID;              // Select: Cli socketID; 业务客户端建立的SocketID，PACK_TYPE_DATA_BEG包带，通道Elem是临时存下
+                                // Epoll: Cli Virtual Increamental ID，避免socket复用导致问题；用于链路传输Cli侧唯一标识（全链路是SN + VID唯一标识）
+
     int nPackSeq;               // 为每个SocketID连接
 
     // 接收数据相关
@@ -148,7 +155,9 @@ public:
     unsigned int nAcceptSec;    // Accept的时间
     unsigned int nLastRecvSec;  // 最后一次接收数据的时间，有心跳包，防止假连
 
-#ifdef USE_AES
+    uint64_t uCreateTime;
+
+#if 1//def USE_AES
     char EncBuffer[ELEM_BUFFER_SIZE];
     char* pEncBuffer;           // 收到的原始加密流
     int nEncBufLen;
@@ -242,6 +251,7 @@ int ListenSocket(SOCKET& sockListen, const char* pIPAddress, int nPort);
 // 判断是否需要等一下再发送，比如缓冲区堵住
 bool IsReSendSocketError(int nError);
 
+uint64_t GetCurMilliSecond();
 unsigned int GetCurSecond();
 const char* GetCurTimeStr();    // 单线程使用，todo 多线程可能乱码但不至于崩溃
 void InitLog(const char* file);

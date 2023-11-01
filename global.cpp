@@ -48,6 +48,9 @@ void CLfrpSocket::InitMember()
     nBufAlloc = 0;
     memset(Buffer, 0, ELEM_BUFFER_SIZE);
 
+    // 除了析构，只有Tun会ClearBuffer，没必要清除时间
+    //uCreateTime = GetCurMilliSecond();
+
 #ifdef USE_AES
     pEncBuffer = nullptr;
     nEncBufAlloc = 0;
@@ -84,6 +87,8 @@ void CLfrpSocket::ClearBuffer()
     nSocketID = INVALID_SOCKET;
     nPackSeq = 0;
     memset(Buffer, 0, ELEM_BUFFER_SIZE);
+
+    uCreateTime = 0;
 
     for (int i = 0; i < vecSendBuf.size(); i++)
     {
@@ -1006,6 +1011,18 @@ bool IsReSendSocketError(int nError)
     return (nError == WSAEWOULDBLOCK);
 #else
     return (nError == EAGAIN || nError == EWOULDBLOCK || nError == EINTR);
+#endif
+}
+
+uint64_t GetCurMilliSecond()
+{
+#ifdef _WIN32
+    return (uint64_t)GetTickCount();
+#else
+    struct timeval tm;
+    float timeuse;
+    gettimeofday(&tm, NULL);
+    return (uint64_t)tm.tv_sec * 1000 + tm.tv_usec / 1000;
 #endif
 }
 

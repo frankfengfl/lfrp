@@ -657,21 +657,49 @@ int TunProcessFirstRead(int nIndex, int sock, CLfrpSocket* pSocket)
     CSocketPair& pair = iter->second;
     if (pair.pServer && pair.pServer->sock == sock)
     {
+#ifdef USE_AES
         if (pair.pVistor && MoveSendAESPack(pair.pServer, pair.pVistor))
         {
             PRINT_INFO("%s Tun %s,%d: Server send pack to Vistor\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
             //pair.pVistor->Op = OP_WRITE;
             FireWriteEvent(pair.pVistor->sock);
         }
+#else
+        // 包收完全了
+        if (pair.pServer->nBufLen >= pair.pServer->nPackLen && pair.pServer->nPackLen > 0)
+        {
+            PRINT_INFO("%s Tun %s,%d: Server recv socketID %d pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pServer->nSocketID, pair.pServer->nPackLen, pair.pServer->nPackSeq);
+            if (MoveSendPack(pair.pServer, pair.pVistor))
+            {
+                PRINT_INFO("%s Tun %s,%d: Server send pack to Vistor\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+                //pair.pVistor->Op = OP_WRITE;
+                FireWriteEvent(pair.pVistor->sock);
+            }
+        }
+#endif
     }
     else if (pair.pVistor && pair.pVistor->sock == sock)
     {
+#ifdef USE_AES
         if (pair.pServer && MoveSendAESPack(pair.pVistor, pair.pServer))
         {
             PRINT_INFO("%s Svr %s,%d: Vistor send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
             //pair.pServer->Op = OP_WRITE;
             FireWriteEvent(pair.pServer->sock);
         }
+#else
+        // 包收完全了
+        if (pair.pVistor->nBufLen >= pair.pVistor->nPackLen && pair.pVistor->nPackLen > 0)
+        {
+            PRINT_INFO("%s Tun %s,%d: Vistor socketID %d recv pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->nSocketID, pair.pVistor->nPackLen, pair.pVistor->nPackSeq);
+            if (MoveSendPack(pair.pVistor, pair.pServer))
+            {
+                PRINT_INFO("%s Svr %s,%d: Vistor send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+                //pair.pServer->Op = OP_WRITE;
+                FireWriteEvent(pair.pServer->sock);
+            }
+        }
+#endif
     }
     return 0;
 }
@@ -688,7 +716,11 @@ int TunRead(int nIndex, int sock, char* pBuffer, int nCount)
         CSocketPair& pair = iter->second;
         if (pair.pServer && pair.pServer->sock == sock)
         {
+#ifdef USE_AES
             int nRet = AddTunAESRecvData(pair.pServer, pBuffer, nCount);
+#else
+            int nRet = AddAESRecvData(pair.pServer, pBuffer, nCount);
+#endif
             if (nRet <= 0)
             {
                 // ServerTun断开，成对关掉，不需要通知，Server和Vistor两端断开会清理
@@ -697,17 +729,35 @@ int TunRead(int nIndex, int sock, char* pBuffer, int nCount)
             }
             else
             {
+#ifdef USE_AES
                 if (pair.pVistor && MoveSendAESPack(pair.pServer, pair.pVistor))
                 {
                     PRINT_INFO("%s Tun %s,%d: Server send pack to Vistor\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                     //pair.pVistor->Op = OP_WRITE;
                     FireWriteEvent(pair.pVistor->sock);
                 }
+#else
+                // 包收完全了
+                if (pair.pServer->nBufLen >= pair.pServer->nPackLen && pair.pServer->nPackLen > 0)
+                {
+                    PRINT_INFO("%s Tun %s,%d: Server recv socketID %d pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pServer->nSocketID, nRet, pair.pServer->nPackSeq);
+                    if (MoveSendPack(pair.pServer, pair.pVistor))
+                    {
+                        PRINT_INFO("%s Tun %s,%d: Server send pack to Vistor\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+                        //pair.pVistor->Op = OP_WRITE;
+                        FireWriteEvent(pair.pVistor->sock);
+                    }
+                }
+#endif
             }
         }
         else if (pair.pVistor && pair.pVistor->sock == sock)
         {
+#ifdef USE_AES
             int nRet = AddTunAESRecvData(pair.pVistor, pBuffer, nCount);
+#else
+            int nRet = AddAESRecvData(pair.pVistor, pBuffer, nCount);
+#endif
             if (nRet <= 0)
             {
                 PRINT_ERROR("%s Tun %s,%d: Vistor SocketID %d disconnect because read from Server err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock, nRet, WSAGetLastError());
@@ -715,12 +765,26 @@ int TunRead(int nIndex, int sock, char* pBuffer, int nCount)
             }
             else
             {
+#ifdef USE_AES
                 if (pair.pServer && MoveSendAESPack(pair.pVistor, pair.pServer))
                 {
                     PRINT_INFO("%s Svr %s,%d: Vistor send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
                     //pair.pServer->Op = OP_WRITE;
                     FireWriteEvent(pair.pServer->sock);
                 }
+#else
+                // 包收完全了
+                if (pair.pVistor->nBufLen >= pair.pVistor->nPackLen && pair.pVistor->nPackLen > 0)
+                {
+                    PRINT_INFO("%s Tun %s,%d: Vistor socketID %d recv pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->nSocketID, nRet, pair.pVistor->nPackSeq);
+                    if (MoveSendPack(pair.pVistor, pair.pServer))
+                    {
+                        PRINT_INFO("%s Svr %s,%d: Vistor send pack to Server\n", GetCurTimeStr(), __FUNCTION__, __LINE__);
+                        //pair.pServer->Op = OP_WRITE;
+                        FireWriteEvent(pair.pServer->sock);
+                    }
+                }
+#endif
             }
         }
     }
@@ -733,7 +797,11 @@ int TunRead(int nIndex, int sock, char* pBuffer, int nCount)
             return 0;
         }
         
+#ifdef USE_AES
         int nRet = AddTunAESRecvData(pSocket, pBuffer, nCount);
+#else
+        int nRet = AddAESRecvData(pSocket, pBuffer, nCount);
+#endif
         if (nRet <= 0)
         {
             PRINT_ERROR("%s Tun %s,%d: new SocketID %d disconnect because read from Server err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nRet, WSAGetLastError());
@@ -791,12 +859,16 @@ int TunWrite(int nIndex, int sock)
 
                     // 调试日志
                     int nType, nPakLen, nSocketID, nSeq;
+#ifdef USE_AES
                     CAES cAes;
                     CBuffer bufDec;
                     bufDec.nLen = 0;
-                    bufDec.pBuffer = (char*)cAes.Decrypt(buf.pBuffer, buf.nLen, bufDec.nLen); // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+                    //bufDec.pBuffer = (char*)cAes.Decrypt(buf.pBuffer, buf.nLen, bufDec.nLen); // 调试时开启，否则靠下面的GetInfoFromBuf初始化
                     GetInfoFromBuf(bufDec, nType, nPakLen, nSocketID, nSeq);
-                    delete[] bufDec.pBuffer; // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+                    //delete[] bufDec.pBuffer; // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+#else
+                    GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
+#endif
                     PRINT_INFO("%s Tun %s,%d: Server send socketID %d pack to BusServer size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
                     //开始send
@@ -845,12 +917,16 @@ int TunWrite(int nIndex, int sock)
 
                     // 调试日志
                     int nType, nPakLen, nSocketID, nSeq;
+#ifdef USE_AES
                     CAES cAes;
                     CBuffer bufDec;
                     bufDec.nLen = 0;
                     //bufDec.pBuffer = (char*)cAes.Decrypt(buf.pBuffer, buf.nLen, bufDec.nLen); // 调试时开启，否则靠下面的GetInfoFromBuf初始化
                     GetInfoFromBuf(bufDec, nType, nPakLen, nSocketID, nSeq);
                     //delete[] bufDec.pBuffer; // 调试时开启，否则靠下面的GetInfoFromBuf初始化
+#else
+                    GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
+#endif
                     PRINT_INFO("%s Tun %s,%d: Vistor send socketID %d pack to Client size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
                     //开始send

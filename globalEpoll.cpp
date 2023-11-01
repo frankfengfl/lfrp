@@ -673,18 +673,38 @@ void EpollWorker(int nIndex)
         std::vector<int> vecClose;
         std::vector<int> vecHB;
         std::unique_lock<std::mutex> lock(pMutexAry[nIndex]);
-        vecHB.insert(vecHB.end(), pHeartBeatSockAry[nIndex].begin(), pHeartBeatSockAry[nIndex].end());
-        vecWrite.insert(vecWrite.end(), pSendSockAry[nIndex].begin(), pSendSockAry[nIndex].end());
-        vecRead.insert(vecRead.end(), pRecvSockAry[nIndex].begin(), pRecvSockAry[nIndex].end());
-        vecClose.insert(vecClose.end(), pCloseSockAry[nIndex].begin(), pCloseSockAry[nIndex].end());
-        vecTrans.insert(vecTrans.end(), pTransSockAry[nIndex].begin(), pTransSockAry[nIndex].end());
-        pHeartBeatSockAry[nIndex].clear();
-        pSendSockAry[nIndex].clear();
-        pRecvSockAry[nIndex].clear();
-        pCloseSockAry[nIndex].clear();
-        pTransSockAry[nIndex].clear();
         int nFlag = pFlagAry[nIndex];
         pFlagAry[nIndex] = 0;
+
+        if (nFlag & EPOLL_CUSTOM_HEART_BEAT_EVENT)
+        {
+            vecHB.insert(vecHB.end(), pHeartBeatSockAry[nIndex].begin(), pHeartBeatSockAry[nIndex].end());
+            pHeartBeatSockAry[nIndex].clear();
+        }
+
+        if (nFlag & EPOLLOUT)
+        {
+            vecWrite.insert(vecWrite.end(), pSendSockAry[nIndex].begin(), pSendSockAry[nIndex].end());
+            pSendSockAry[nIndex].clear();
+        }
+
+        if (nFlag & EPOLLIN)
+        { // 加上条件，避免FireReadEvent时先加入SockAry还没设置flag，进入此函数会清掉了SockAry，但实际由于没有flag并没执行，导致丢失事件
+            vecRead.insert(vecRead.end(), pRecvSockAry[nIndex].begin(), pRecvSockAry[nIndex].end());
+            pRecvSockAry[nIndex].clear();
+        }
+
+        if (nFlag & EPOLLERR)
+        {
+            vecClose.insert(vecClose.end(), pCloseSockAry[nIndex].begin(), pCloseSockAry[nIndex].end());
+            pCloseSockAry[nIndex].clear();
+        }
+
+        if (nFlag & EPOLL_CUSTOM_TRANS_EVENT)
+        {
+            vecTrans.insert(vecTrans.end(), pTransSockAry[nIndex].begin(), pTransSockAry[nIndex].end());
+            pTransSockAry[nIndex].clear();
+        }
         lock.unlock();
 
         // 收了第一组包后转过来，需要把第一组包处理完，可能包含数据包，在后续循环再处理EPOLLIN读新数据
@@ -736,6 +756,9 @@ void EpollWorker(int nIndex)
                 int sock = vecClose[i];
                 if (fnBusCloseCallback)
                 {
+                    // todo, socket复用读写问题不大，但是复用close就会导致新实例被关闭，这个关闭事件要带时间？需要上面带回调把读写中CloseLfrpSocket的时候清除vecClose中的？
+                    // 现在只能靠延迟关闭，至少不用走网络链路，时间还可控点
+                    PRINT_INFO("%s %s,%d: EpollWorker worker thread %d prepare to close socketID %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nIndex, sock);
                     fnBusCloseCallback(nIndex, sock);
                 }
             }
@@ -1029,7 +1052,9 @@ int FireDelayClose()
     for (std::map<int, unsigned int>::iterator iter = mapCloseSockToTime.begin(); iter != mapCloseSockToTime.end(); iter++)
     {
         // 延迟3秒即可，太长影响socket复用
-        if (uSec - iter->second >= 3)  // todo，延迟3秒
+        // todo, 这个时间需要根据系统空闲度确定，如果太堵需要设置较高；
+        // 复用影响：老的FireCloseEvent会关闭新的socket；网络链路回包通过Cli VID来区分就不会有影响了
+        if (uSec - iter->second >= 3)
         {
             vecSock.push_back(iter->first);
         }

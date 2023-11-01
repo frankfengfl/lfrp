@@ -37,15 +37,15 @@ all : $(targetTun) $(targetCli) $(targetSvr) $(targetEchoCli) $(targetEchoSvr)
 
 $(targetTun) : $(objs) $(objsTun)
 	@mkdir -p $(TARGETDIR)
-	g++ $(CFLAGS) $(objs) $(objsTun) $(dirlib) $(lib) -o $(targetTun) $(INCLUDE)
+	g++ -DIN_LFRP_TUN $(CFLAGS) $(objs) $(objsTun) $(dirlib) $(lib) -o $(targetTun) $(INCLUDE)
 	
 $(targetCli) : $(objs) $(objsCli)
 	@mkdir -p $(TARGETDIR)
-	g++ $(CFLAGS) $(objs) $(objsCli) $(dirlib) $(lib) -o $(targetCli) $(INCLUDE)
+	g++ -DIN_LFRP_CLI $(CFLAGS) $(objs) $(objsCli) $(dirlib) $(lib) -o $(targetCli) $(INCLUDE)
 	
 $(targetSvr) : $(objs) $(objsSvr)
 	@mkdir -p $(TARGETDIR)
-	g++ $(CFLAGS) $(objs) $(objsSvr) $(dirlib) $(lib) -o $(targetSvr) $(INCLUDE)
+	g++ -DIN_LFRP_SVR $(CFLAGS) $(objs) $(objsSvr) $(dirlib) $(lib) -o $(targetSvr) $(INCLUDE)
 	
 $(targetEchoCli) : $(objsEchoCli)
 	@mkdir -p $(TARGETDIR)

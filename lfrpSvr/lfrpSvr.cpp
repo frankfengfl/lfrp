@@ -504,6 +504,7 @@ void DoBusSocketErr(int nIndex, CLfrpSocket* pSocket, CLfrpSocket* pTunSocket)
     {
         pTunSocket->vecSendBuf.push_back(buf);
         //pTunSocket->Op = OP_WRITE;
+        FireWriteEvent(pTunSocket->sock);
     }
 }
 
@@ -600,7 +601,7 @@ int SvrRead(int nIndex, int sock, char* pBuffer, int nCount)
                         printf("%s connect() Svr Failed: %d\n", GetCurTimeStr(), WSAGetLastError());
                         // 连接业务服务失败，需要通知client侧清掉这条连接
                         DoBusSocketErr(nIndex, pSocket, pTunSocket);
-                        FireWriteEvent(pTunSocket->sock);
+                        //FireWriteEvent(pTunSocket->sock);
                         delete pSocket;
                     }
                     else
@@ -630,7 +631,7 @@ int SvrRead(int nIndex, int sock, char* pBuffer, int nCount)
                     CSocketWorkerMap::iterator iter = mapBusinessSvr.find(MAKE_SOCKET_MAP_KEY(pTunSocket->nServiceNumber, pTunSocket->nSocketID));
                     if (iter != mapBusinessSvr.end())
                     {
-                        PRINT_ERROR("%s Svr %s,%d: Svr SocketID %d disconnect because Cli send DataEnd\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->second->sock);
+                        PRINT_INFO("%s Svr %s,%d: Svr SocketID %d disconnect because Cli send DataEnd\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->second->sock);
                         // 客户侧断开，也要同时断开业务侧连接
                         RemoveSeqKey(iter->second->sock);  // 客户端断开，从map中删除
                         CloseLfrpSocket(iter->second);
@@ -760,8 +761,10 @@ int SvrWrite(int nIndex, int sock)
                 // 发送前加密
                 char* pSendBuffer = buf.pBuffer;
                 int nSendLen = buf.nLen;
+#ifdef USE_AES
                 CAES cAes;
                 pSendBuffer = (char*)cAes.Encrypt(buf.pBuffer, buf.nLen, nSendLen, true);
+#endif
 
                 //开始send
                 nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
@@ -776,7 +779,9 @@ int SvrWrite(int nIndex, int sock)
                     }
                     break;
                 }
+#ifdef USE_AES
                 delete[] pSendBuffer;
+#endif
                 delete[] buf.pBuffer;
                 buf.pBuffer = nullptr;
                 buf.nLen = 0;
@@ -787,6 +792,8 @@ int SvrWrite(int nIndex, int sock)
 
                     // 通道失败，清掉所有业务侧连接
                     CloseLfrpSocket(pTunSocket);
+                    delete pTunSocket;
+                    SetSockBySN(nServiceNum, INVALID_SOCKET);
                     for (CSocketWorkerMap::iterator iter = mapSvr.begin(); iter != mapSvr.end(); iter++)
                     {
                         if (iter->second->sock != INVALID_SOCKET)
@@ -902,7 +909,7 @@ int SvrClose(int nIndex, int sock)
         if (pTunSocket)
         {
             DoBusSocketErr(nIndex, pSocket, pTunSocket);
-            FireWriteEvent(pTunSocket->sock);
+            //FireWriteEvent(pTunSocket->sock);
         }
         CSocketWorkerMap& mapSvr = pSvrMapAry[nIndex];
         CSocketWorkerMap::iterator iter = mapSvr.find(MAKE_SOCKET_MAP_KEY(pSocket->nServiceNumber, pSocket->nSocketID));

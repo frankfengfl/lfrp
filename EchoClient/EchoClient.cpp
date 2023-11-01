@@ -173,7 +173,7 @@ int tcp_client_test()
 #include<sys/time.h>
 #include <atomic>
 
-#define TEST_LOOP_COUNT  100
+#define TEST_LOOP_COUNT  500
 std::thread** pEchoCliThreadAry = nullptr;
 typedef std::map<int, std::string> CSocketDataMap;
 CSocketDataMap* pSockDataMapAry = nullptr;
@@ -222,11 +222,12 @@ void ExitProcess()
     printf("%s %s,%d: test finish take %dms with %d correct in %d test count, TPC %f\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nDiffTime, nCoCnt, nClCnt, nCountPerSec);
 #endif
 
+    // 打印失败内容：比如单机测试EchoServer抢不到资源，来不及accept；
     for (size_t i = 0; i < nThreadCount; i++)
     {
         for (CSocketDataMap::iterator iter = pSockDataMapAry[i].begin(); iter != pSockDataMapAry[i].end(); iter++)
         {
-            if (iter->second.length() == 0)
+            //if (iter->second.length() == 0)
             {
                 PRINT_ERROR("%s %s,%d: SocketID %d with data size %d didn't recv data\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->first, iter->second.length());
             }
@@ -239,7 +240,7 @@ void ExitProcess()
     }
 
     // todo，完整清理并退出
-    //exit(0);
+    exit(0);
 }
 
 int EchoCliTrans(int nIndex, int sock, CLfrpSocket* pSocket)
@@ -359,7 +360,7 @@ void EchoConnectWorker(int nIndex, const char* pIPAddr, int nPort)
         // 等待连接太多需要等一下
         if (nConnectCount - nCloseCount > 100)
         {
-            usleep(10 * 1000);
+            usleep(1 * 1000);
         }
 
         int sock = INVALID_SOCKET;
