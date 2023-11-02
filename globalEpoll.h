@@ -37,10 +37,12 @@
 // EPOLLIN 1, EPOLLOUT 4, EPOLLPRI 2, EPOLLERR 8, EPOLLRDHUP 2000, EPOLLET 80000000, EPOLLONESHOT 40000000
 #define EPOLL_CUSTOM_TRANS_EVENT    (EPOLLERR << 2)     // 仅用于自定义中转到工作线程使用
 #define EPOLL_CUSTOM_HEART_BEAT_EVENT (EPOLLERR << 4)   // 仅用于自定义中转到工作线程使用
-#define MAX_FILE_NUMBER     60000  // 进程最大文件数
+#define MAX_FILE_NUMBER     100*1024  // 进程最大文件数
 #define MAX_EPOLL_EVENT     20000  // EPOLL事件数
 
 #define OP_TRANS 0x80	//定义结构体用于储存通信信息
+
+#define DELAY_CLOSE_SECOND      5   // 延迟关闭socket避免快速复用影响业务
 #endif
 
 #ifdef USE_EPOLL

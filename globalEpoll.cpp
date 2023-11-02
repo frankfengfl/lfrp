@@ -1051,10 +1051,10 @@ int FireDelayClose()
     std::unique_lock<std::mutex> lock(mtxDelayClose);
     for (std::map<int, unsigned int>::iterator iter = mapCloseSockToTime.begin(); iter != mapCloseSockToTime.end(); iter++)
     {
-        // 延迟3秒即可，太长影响socket复用
+        // 延迟几秒即可，太长影响socket复用
         // todo, 这个时间需要根据系统空闲度确定，如果太堵需要设置较高；
-        // 复用影响：老的FireCloseEvent会关闭新的socket；网络链路回包通过Cli VID来区分就不会有影响了
-        if (uSec - iter->second >= 3)
+        // 复用主要影响是老sock事件比如close影响新的导致关闭，可以通过事件加时间来区分，但目前通过延迟关闭也可以简单点
+        if (uSec - iter->second >= DELAY_CLOSE_SECOND)
         {
             vecSock.push_back(iter->first);
         }
