@@ -43,6 +43,8 @@
 #define OP_TRANS 0x80	//定义结构体用于储存通信信息
 
 #define DELAY_CLOSE_SECOND      5   // 延迟关闭socket避免快速复用影响业务
+
+#define DEFAULT_EPOLL_SERVICE_NUM   16  // 在阿里云海外服务做lfrpTun时，会有明显的丢包，导致整个ServiceNum通道重连，分多点减少影响
 #endif
 
 #ifdef USE_EPOLL

@@ -60,7 +60,8 @@ extern int geterror();
 
 #define Print_ErrCode(e) fprintf(stderr,"\n[Server]%s 执行失败: %d\n",e,WSAGetLastError())
 
-//#define LOG_TO_FILE
+//#define RECORD_SOCKET_DATA  // 是否记录socket收发的数据
+#define LOG_TO_FILE
 #ifdef LOG_TO_FILE
     #define PRINT_ERROR PrintToFile
     #define PRINT_INFO //PrintToFile
@@ -90,6 +91,20 @@ enum PackTypeEnum
     PACK_TYPE_TUN_BEG = 1000,   // 通道之间的消息，不涉及业务
     PACK_TYPE_TUN_END = 1999,   // 通道之间的消息，不涉及业务；用于分段结束，也用于业务结束
     PACK_TYPE_UNKNOW = 10000,
+};
+
+// 记录
+enum RecordTypeEnum
+{
+    RECORD_TYPE_UNKNOW = 0,     // 未知类型，不需要记录，比如lfrpTun收到新建连接
+    RECORD_TYPE_TUN_RECV = 1,   // lfrpCli和lfrpSvr跟通道的接受
+    RECORD_TYPE_TUN_SEND,       // lfrpCli和lfrpSvr跟通道的发送
+    RECORD_TYPE_BUS_RECV,       // lfrpCli和lfrpSvr跟非通道的接受
+    RECORD_TYPE_BUS_SEND,       // lfrpCli和lfrpSvr跟非通道的发送
+    RECORD_TYPE_STUN_RECV,      // lfrpTun跟业务服务侧连接的接受
+    RECORD_TYPE_STUN_SEND,      // lfrpTun跟业务服务侧连接的发送
+    RECORD_TYPE_CTUN_RECV,      // lfrpTun跟客户侧连接的接受
+    RECORD_TYPE_CTUN_SEND,      // lfrpTun跟客户侧连接的发送
 };
 
 
@@ -196,8 +211,8 @@ bool AddDataToSocketBuffer(char Buffer[], char*& pBuffer, int& nBufLen, int& nBu
 bool RemoveDataFromSocketBuffer(char Buffer[], char*& pBuffer, int& nBufLen, int& nBufAlloc, char* pBuf, int& nPackLen);
 
 // recv封装，用于加入aes以及内存管理
-int LfrpRecv(CLfrpSocket* pSocket);                          // 数据流接收封装，返回值小于0错误，等于0断开，大于0正常
-int LfrpTunAESRecv(CLfrpSocket* pSocket);
+int LfrpRecv(CLfrpSocket* pSocket, RecordTypeEnum nType);                          // 数据流接收封装，返回值小于0错误，等于0断开，大于0正常
+int LfrpTunAESRecv(CLfrpSocket* pSocket, RecordTypeEnum nType);
 int AddAESRecvData(CLfrpSocket* pSocket, char* Buffer, int nRet);       // 通用获取数据，全解密
 int AddTunAESRecvData(CLfrpSocket* pSocket, char* Buffer, int nRet);    // 通道获取数据，只用解出包头
 
@@ -234,7 +249,7 @@ void RemoveSeqKey(int nSocketID);
 void GetInfoFromBuf(CBuffer& buf, int& nType, int& nLen, int& nSocketID, int& nSeq);
 
 // 获取最后一个包信息，注意这个函数要求最后的包头至少包含包大小字段
-void GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen);
+int GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen);
 
 // 初始化socket
 int InitSocket();
@@ -251,11 +266,16 @@ int ListenSocket(SOCKET& sockListen, const char* pIPAddress, int nPort);
 // 判断是否需要等一下再发送，比如缓冲区堵住
 bool IsReSendSocketError(int nError);
 
+void DeleteBufItems(CVecBuffer& vecBuf, int nIndex);
+
 uint64_t GetCurMilliSecond();
 unsigned int GetCurSecond();
 const char* GetCurTimeStr();    // 单线程使用，todo 多线程可能乱码但不至于崩溃
 void InitLog(const char* file);
 void PrintToFile(const char* format, ...);
+
+void InitSection(const char* section);
+void RecordSocketData(RecordTypeEnum nType, int nSocket, char* pData, int nLen);
 
 std::vector<std::string> stringSplit(const std::string& str, char delim);
 std::vector<int> TransStrToInt(std::vector<std::string>& vecStr);

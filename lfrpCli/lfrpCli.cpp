@@ -43,7 +43,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapLocalSvr, fd_set& fdRead
     int nFunRet = 0;
     if (FD_ISSET(pTunSocket->sock, &fdRead))
     {
-        int nRet = LfrpRecv(pTunSocket);
+        int nRet = LfrpRecv(pTunSocket, RECORD_TYPE_TUN_RECV);
         if (nRet <= 0)
         {
             PRINT_ERROR("%s Cli %s,%d: Tun SocketID %d disconnect because read err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->sock, nRet, WSAGetLastError());
@@ -167,6 +167,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapLocalSvr, fd_set& fdRead
                 }
                 else if (nRet > 0)
                 {
+                    //RecordSocketData(RECORD_TYPE_BUS_RECV, pSocket->sock, Buffer, nRet);
                     pSocket->nLastRecvSec = GetCurSecond();
                     int nSeq = GetNextSeq(SEQ_CLIENT, pSocket->sock);
                     PRINT_INFO("%s Cli %s,%d: Svr socketID %d recv pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nRet, nSeq);
@@ -240,6 +241,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                     Sleep(1);
                     nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
                 }
+                //RecordSocketData(RECORD_TYPE_TUN_SEND, pTunSocket->sock, pSendBuffer, nSendLen);
 #ifdef USE_AES
                 delete[] pSendBuffer;
 #endif
@@ -297,6 +299,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                             Sleep(1);
                             nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, LFRP_SEND_FLAGS);
                         }
+                        //RecordSocketData(RECORD_TYPE_BUS_SEND, pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA);
                         //事实上，这里可能会有nRet小于bufLen的情况
                         if (nRet == SOCKET_ERROR || nRet == 0)
                         {
@@ -651,6 +654,8 @@ int CliRead(int nIndex, int sock, char* pBuffer, int nCount)
     { // 处理通道连接
         CLfrpSocket* pTunSocket = pSocket;
         CSocketMap& mapLocalSvr = pSvrMapAry[nIndex];
+        PRINT_INFO("%s Cli %s,%d: Tun recv sock %d buf size %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, nCount);
+        RecordSocketData(RECORD_TYPE_TUN_RECV, sock, pBuffer, nCount);
         int nRet = AddAESRecvData(pTunSocket, pBuffer, nCount);
         if (nRet <= 0)
         {
@@ -669,15 +674,15 @@ int CliRead(int nIndex, int sock, char* pBuffer, int nCount)
             mapLocalSvr.clear();
 
             // 发送通道重连通知
-            //FireConnectEvent(nServiceNum);
-            AddDelayReConnect(nServiceNum);
+            FireConnectEvent(nServiceNum);  // 通道临时问题，需要马上重连，重连失败的才延迟
+            //AddDelayReConnect(nServiceNum);
         }
         else
         {
             // 包收完全了
             while (pTunSocket->nBufLen >= pTunSocket->nPackLen && pTunSocket->nPackLen > 0)
             {
-                PRINT_INFO("%s Cli %s,%d: Tun recv socketID %d pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->nSocketID, nRet, pTunSocket->nPackSeq);
+                PRINT_INFO("%s Cli %s,%d: Tun recv sock %d socketID %d pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, pTunSocket->nSocketID, nRet, pTunSocket->nPackSeq);
                 if (pTunSocket->nType == PACK_TYPE_DATA_END)
                 { // 客户端断开
                     CSocketMap::iterator iter = mapLocalSvr.find(pTunSocket->nSocketID);
@@ -762,8 +767,8 @@ int CliRead(int nIndex, int sock, char* pBuffer, int nCount)
             int nSeq = GetNextSeq(nIndex, SEQ_CLIENT, pSocket->sock);
             //PRINT_INFO("%s Cli %s,%d: Svr socketID %d recv pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->sock, nCount, nSeq);
             // todo, 注释掉下面的代码
-            std::string str(pBuffer, nCount);
-            PRINT_INFO("%s Cli %s,%d: Svr socketID %d recv pack size %d:%s seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->nSocketID, nCount, str.c_str(), nSeq);
+            //std::string str(pBuffer, nCount);
+            //PRINT_INFO("%s Cli %s,%d: Svr socketID %d recv pack size %d:%s seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->nSocketID, nCount, str.c_str(), nSeq);
 
             CBuffer buf;
             buf.pBuffer = new char[PACK_SIZE_DATA + nCount];
@@ -865,11 +870,12 @@ int CliWrite(int nIndex, int sock)
                     PRINT_ERROR("%s Cli %s,%d: send to Tun err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSendLen);
                     nError = true;
                     CVecBuffer& vecBuf = pTunSocket->vecSendBuf;
-                    while (i > 0)
+                    DeleteBufItems(vecBuf, i);
+                    /*while (i > 0)
                     {
                         i--;
                         vecBuf.erase(vecBuf.begin());
-                    }
+                    }*/
                     break;
                 }
 #ifdef USE_AES
@@ -935,11 +941,12 @@ int CliWrite(int nIndex, int sock)
                         PRINT_ERROR("%s Cli %s,%d: send to User err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen - PACK_SIZE_DATA);
                         nError = true;
                         CVecBuffer& vecBuf = pTunSocket->vecSendBuf;
-                        while (i > 0)
+                        DeleteBufItems(vecBuf, i);
+                        /*while (i > 0)
                         {
                             i--;
                             vecBuf.erase(vecBuf.begin());
-                        }
+                        }*/
                         break;
                     }
                     //事实上，这里可能会有nRet小于bufLen的情况
@@ -1111,10 +1118,10 @@ int main(int argc, char** argv)
     // Epoll模式默认开4个ServiceNumber，注意不要开多个相同ServiceNumber的进程
     if (vecServieNumber.size() == 0)
     {
-        vecServieNumber.push_back(1);
-        vecServieNumber.push_back(2);
-        vecServieNumber.push_back(3);
-        vecServieNumber.push_back(4);
+        for (size_t i = 0; i < DEFAULT_EPOLL_SERVICE_NUM; i++)
+        {
+            vecServieNumber.push_back(i);
+        }
     }
 #endif
 
@@ -1123,7 +1130,8 @@ int main(int argc, char** argv)
 
     // 初始化socket
     InitSocket();
-
+    
+    InitSection("Cli");
 #ifdef USE_EPOLL
     uLastHeartBeatSec = GetCurSecond();
     InitLog("./Cli.txt");

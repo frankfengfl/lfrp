@@ -83,9 +83,9 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
         if (pair.pServer && FD_ISSET(pair.pServer->sock, &fdRead))
         {
 #ifdef USE_AES
-            int nRet = LfrpTunAESRecv(pair.pServer);
+            int nRet = LfrpTunAESRecv(pair.pServer, RECORD_TYPE_STUN_RECV);
 #else
-            int nRet = LfrpRecv(pair.pServer);
+            int nRet = LfrpRecv(pair.pServer, RECORD_TYPE_STUN_RECV);
 #endif
             if (nRet <= 0)
             {
@@ -123,9 +123,9 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
         if (pair.pVistor && FD_ISSET(pair.pVistor->sock, &fdRead))
         {
 #ifdef USE_AES
-            int nRet = LfrpTunAESRecv(pair.pVistor);
+            int nRet = LfrpTunAESRecv(pair.pVistor, RECORD_TYPE_CTUN_RECV);
 #else
-            int nRet = LfrpRecv(pair.pVistor);
+            int nRet = LfrpRecv(pair.pVistor, RECORD_TYPE_CTUN_RECV);
 #endif
             if (nRet <= 0)
             {
@@ -167,9 +167,9 @@ void ProcessRead(CSocketPairMap& mapSocketPair, fd_set& fdRead)
         {
             CLfrpSocket* pSocket = vecSocket[i];
 #ifdef USE_AES
-            int nRet = LfrpTunAESRecv(pSocket);
+            int nRet = LfrpTunAESRecv(pSocket, RECORD_TYPE_UNKNOW);
 #else
-            int nRet = LfrpRecv(pSocket);
+            int nRet = LfrpRecv(pSocket, RECORD_TYPE_UNKNOW);
 #endif
             if (nRet <= 0)
             {
@@ -319,6 +319,7 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                         Sleep(1);
                         nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
                     }
+                    //RecordSocketData(RECORD_TYPE_STUN_SEND, pair.pServer->sock, buf.pBuffer, buf.nLen);
                     delete[] buf.pBuffer;
                     buf.pBuffer = nullptr;
                     buf.nLen = 0;
@@ -372,6 +373,7 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                         Sleep(1);
                         nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
                     }
+                    //RecordSocketData(RECORD_TYPE_CTUN_SEND, pair.pVistor->sock, buf.pBuffer, buf.nLen);
                     delete[] buf.pBuffer;
                     buf.pBuffer = nullptr;
                     buf.nLen = 0;
@@ -879,11 +881,12 @@ int TunWrite(int nIndex, int sock)
                         // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
                         nError = true;
                         CVecBuffer& vecBuf = pair.pServer->vecSendBuf;
-                        while (i > 0)
+                        DeleteBufItems(vecBuf, i);
+                        /*while (i > 0)
                         {
                             i--;
                             vecBuf.erase(vecBuf.begin());
-                        }
+                        }*/
                         break;
                     }
                     // 发送成功删掉数据内容
@@ -927,7 +930,7 @@ int TunWrite(int nIndex, int sock)
 #else
                     GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
 #endif
-                    PRINT_INFO("%s Tun %s,%d: Vistor send socketID %d pack to Client size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
+                    PRINT_INFO("%s Tun %s,%d: Vistor send sock %d socketID %d pack to Client size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock, nSocketID, buf.nLen, nSeq);
 
                     //开始send
                     nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
@@ -937,13 +940,22 @@ int TunWrite(int nIndex, int sock)
                         // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
                         nError = true;
                         CVecBuffer& vecBuf = pair.pVistor->vecSendBuf;
-                        while (i > 0)
+                        DeleteBufItems(vecBuf, i);
+                        /*while (i > 0)
                         {
                             i--;
                             vecBuf.erase(vecBuf.begin());
-                        }
+                        }*/
                         break;
                     }
+
+                    // 跟上面"调试时开启"搭配，记录每个包信息，用于判断哪个包出问题
+                    /*char buffer[256] = { 0 };
+                    sprintf(buffer, "SocketID:%d,Seq:%d;nLen:%d", nSocketID, nSeq, buf.nLen);
+                    RecordSocketData(RECORD_TYPE_CTUN_SEND, pair.pVistor->sock, buffer, strlen(buffer));*/
+                    // 记录发送内容用于调试
+                    RecordSocketData(RECORD_TYPE_CTUN_SEND, pair.pVistor->sock, buf.pBuffer, buf.nLen);
+
                     delete[] buf.pBuffer;
                     buf.pBuffer = nullptr;
                     buf.nLen = 0;
@@ -1054,7 +1066,8 @@ int main(int argc, char** argv)
 
     // 初始化socket
     InitSocket();
-
+    
+    InitSection("Tun");
 #ifdef USE_EPOLL
     InitLog("./Tun.txt");
     // 初始化epooll工作线程相关

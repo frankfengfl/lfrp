@@ -51,7 +51,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapBusinessSvr, fd_set& fdR
     int nRet = 0;
     if (FD_ISSET(pTunSocket->sock, &fdRead))
     {
-        int nRet = LfrpRecv(pTunSocket);
+        int nRet = LfrpRecv(pTunSocket, RECORD_TYPE_TUN_RECV);
         if (nRet <= 0)
         {
             PRINT_ERROR("%s Svr %s,%d: Tun SocketID %d disconnect because read err %d wsaerr %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->sock, nRet, WSAGetLastError());
@@ -131,6 +131,15 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapBusinessSvr, fd_set& fdR
                             iter->second->Op = OP_WRITE;
                         }
                     }
+                    else
+                    {
+                        // todo, 如果服务侧关闭，或没连成功，这里会空转？
+                        // 连接没成功没关系，能保证先收到连接包头已经建出来CLfrpSocket；
+                        // 但业务服务侧关闭后，客户端可能还是会发包过来，此时丢弃包，并报错
+                        PRINT_ERROR("%s Svr %s,%d: Tun recv socketID %d Data, but can't find BusSvr\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pTunSocket->nSocketID);
+                        // 取掉无效连接的包避免空转
+                        DropOnePack(pTunSocket);
+                    }
                 }
                 else if (pTunSocket->nType == PACK_TYPE_TUN_END)
                 { // 客户端通道整个断开，清掉所有相关业务连接
@@ -179,6 +188,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapBusinessSvr, fd_set& fdR
                 }
                 else if (nRet > 0)
                 {
+                    //RecordSocketData(RECORD_TYPE_BUS_RECV, pSocket->sock, Buffer, nRet);
                     pSocket->nLastRecvSec = GetCurSecond();
                     int nSeq = GetNextSeq(SEQ_SERVER, pSocket->sock);
                     PRINT_INFO("%s Svr %s,%d: Svr socketID %d recv from BusinessServer pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->first, nRet, nSeq);
@@ -252,6 +262,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                     Sleep(1);
                     nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
                 }
+                //RecordSocketData(RECORD_TYPE_TUN_SEND, pTunSocket->sock, pSendBuffer, nSendLen);
 #ifdef USE_AES
                 delete[] pSendBuffer;
 #endif
@@ -309,6 +320,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                             Sleep(1);
                             nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, LFRP_SEND_FLAGS);
                         }
+                        //RecordSocketData(RECORD_TYPE_BUS_SEND, pTunSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA);
                         //事实上，这里可能会有nRet小于bufLen的情况
                         if (nRet == SOCKET_ERROR || nRet == 0)
                         {
@@ -772,11 +784,12 @@ int SvrWrite(int nIndex, int sock)
                 { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
                     nError = true;
                     CVecBuffer& vecBuf = pTunSocket->vecSendBuf;
-                    while (i > 0)
+                    DeleteBufItems(vecBuf, i);
+                    /*while (i > 0)
                     {
                         i--;
                         vecBuf.erase(vecBuf.begin());
-                    }
+                    }*/
                     break;
                 }
 #ifdef USE_AES
@@ -841,11 +854,12 @@ int SvrWrite(int nIndex, int sock)
                     { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
                         nError = true;
                         CVecBuffer& vecBuf = pTunSocket->vecSendBuf;
-                        while (i > 0)
+                        DeleteBufItems(vecBuf, i);
+                        /*while (i > 0)
                         {
                             i--;
                             vecBuf.erase(vecBuf.begin());
-                        }
+                        }*/
                         break;
                     }
                     //事实上，这里可能会有nRet小于bufLen的情况
@@ -1010,10 +1024,10 @@ int main(int argc, char** argv)
     // Epoll模式默认开4个ServiceNumber，注意不要开多个相同ServiceNumber的进程
     if (vecServieNumber.size() == 0)
     {
-        vecServieNumber.push_back(1);
-        vecServieNumber.push_back(2);
-        vecServieNumber.push_back(3);
-        vecServieNumber.push_back(4);
+        for (size_t i = 0; i < DEFAULT_EPOLL_SERVICE_NUM; i++)
+        {
+            vecServieNumber.push_back(i);
+        }
     }
 #endif
 
@@ -1022,7 +1036,8 @@ int main(int argc, char** argv)
 
     // 初始化socket
     InitSocket();
-
+    
+    InitSection("Svr");
 #ifdef USE_EPOLL
     uLastHeartBeatSec =  GetCurSecond();
     InitLog("./Svr.txt");

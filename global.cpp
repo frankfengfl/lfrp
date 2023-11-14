@@ -344,7 +344,15 @@ int AddAESRecvData(CLfrpSocket* pSocket, char* Buffer, int nRet)
                         int nBufLen = 0;
                         int nPackLen = 0;
                         // Buffer里可能多个包，需要连到最后一个包上。取出最后一个包已经收到的数据，以及包大小
-                        GetLastPackLenInfo(pSocket, nBufLen, nPackLen);
+                        int nPackRet = GetLastPackLenInfo(pSocket, nBufLen, nPackLen);
+                        if (nPackRet < 0)
+                        { 
+                            // 如果服务有丢包，失败
+                            PRINT_ERROR("%s %s,%d: receive Pack error %d, the network has drop some packet\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nPackRet);
+                            delete[] pDec;
+                            delete[] pBuf;
+                            return nParseRet;
+                        }
                         if (nBufLen + nDataLen > nPackLen)
                         { // 如果包收全了，解码包里才会有补码，跳过补码
                             int nFillLen = ((nPackLen + AES_BLOCK_SIZE - 1) / AES_BLOCK_SIZE) * AES_BLOCK_SIZE - nPackLen;
@@ -405,7 +413,7 @@ int AddAESRecvData(CLfrpSocket* pSocket, char* Buffer, int nRet)
     return nRet;
 }
 
-int LfrpRecv(CLfrpSocket* pSocket)
+int LfrpRecv(CLfrpSocket* pSocket, RecordTypeEnum nType)
 {
     if (pSocket == nullptr)
     {
@@ -421,6 +429,7 @@ int LfrpRecv(CLfrpSocket* pSocket)
     }
     else if (nRet > 0)
     {
+        //RecordSocketData(nType, pSocket->sock, Buffer, nRet);
         if (AddAESRecvData(pSocket, Buffer, nRet) < 0)
             return -1;
     }
@@ -491,7 +500,7 @@ int AddTunAESRecvData(CLfrpSocket* pSocket, char* Buffer, int nRet)
 }
 
 // 通道接收AES数据转发
-int LfrpTunAESRecv(CLfrpSocket* pSocket)
+int LfrpTunAESRecv(CLfrpSocket* pSocket, RecordTypeEnum nType)
 {
     if (pSocket == nullptr)
     {
@@ -787,7 +796,7 @@ void GetInfoFromBuf(CBuffer& buf, int& nType, int& nLen, int& nSocketID, int& nS
     }
 }
 
-void GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen)
+int GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen)
 {
     char* pBuffer = GetSocketBuffer(pSocket);
     nBufLen = pSocket->nBufLen;
@@ -799,9 +808,15 @@ void GetLastPackLenInfo(CLfrpSocket* pSocket, int& nBufLen, int& nPackLen)
             nBufLen -= nPackLen;
             pBuffer += nPackLen;
             int* pData = (int*)pBuffer;
+            // 海外云有丢包现象，导致解析到下面的包，需要断开
+            if (pData[0] != MAGIC_NUMBER || (pData[1] < PACK_TYPE_AUTH_SERVER || pData[1] > PACK_TYPE_UNKNOW) || pData[2] < 0)
+            {
+                return -1;
+            }
             nPackLen = pData[2];    // 这个函数这里肯定有足够的头了，直接取
         }
     }
+    return 0;
 }
 
 int CheckConnected(SOCKET& sockCon)
@@ -1014,6 +1029,16 @@ bool IsReSendSocketError(int nError)
 #endif
 }
 
+void DeleteBufItems(CVecBuffer& vecBuf, int nIndex)
+{
+    CVecBuffer tmpBuf;
+    for (size_t i = nIndex; i < vecBuf.size(); i++)
+    {
+        tmpBuf.push_back(vecBuf[i]);
+    }
+    vecBuf = tmpBuf;
+}
+
 uint64_t GetCurMilliSecond()
 {
 #ifdef _WIN32
@@ -1078,6 +1103,67 @@ void PrintToFile(const char* format, ...)
         fwrite(ay, sizeof(char), nLen, pFile);
         fflush(pFile);
     }
+}
+
+static std::string sSection;
+static std::string sRecordFilePre;
+void InitSection(const char* section)
+{
+    if (section)
+    {
+        sSection = section;
+    }
+}
+
+// 
+void RecordSocketData(RecordTypeEnum nType, int nSocket, char* pData, int nLen)
+{
+#ifndef RECORD_SOCKET_DATA
+    return;
+#endif
+
+    std::string sFile = "./" + sSection;
+    //sFile += nType == 0 ? "_recv_" : "_send_";
+    switch (nType)
+    {
+    case RECORD_TYPE_TUN_RECV:
+        sFile += "_tun_recv_";
+        break;
+    case RECORD_TYPE_TUN_SEND:
+        sFile += "_tun_send_";
+        break;
+    case RECORD_TYPE_BUS_RECV:
+        sFile += "_bus_recv_";
+        break;
+    case RECORD_TYPE_BUS_SEND:
+        sFile += "_bus_send_";
+        break;
+    case RECORD_TYPE_STUN_RECV:
+        sFile += "_tunS_recv_";
+        break;
+    case RECORD_TYPE_STUN_SEND:
+        sFile += "_tunS_send_";
+        break;
+    case RECORD_TYPE_CTUN_RECV:
+        sFile += "_tunC_recv_";
+        break;
+    case RECORD_TYPE_CTUN_SEND:
+        sFile += "_tunC_send_";
+        break;
+    case RECORD_TYPE_UNKNOW:
+        return;
+        break;
+    default:
+        break;
+    }
+    
+    char buffer[256] = { 0 };
+    sprintf(buffer, "%d", nSocket);
+    sFile += buffer;
+    FILE* pFile = fopen(sFile.c_str(), "a+");
+    fwrite(pData, sizeof(char), nLen, pFile);
+    fflush(pFile);
+    fclose(pFile);
 }
 
 std::vector<std::string> stringSplit(const std::string& str, char delim) 
