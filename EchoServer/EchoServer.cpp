@@ -250,12 +250,22 @@ int EchoSvrRead(int nIndex, int sock, char* pBuffer, int nCount)
 
     return 0;
 
-    int nRet = send(sock, pBuffer, nCount, LFRP_SEND_FLAGS);
-    if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
-    { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
-        PRINT_ERROR("%s %s,%d: send to Tun err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nCount);
+    int nSendIndex = 0;
+    int nRet = send(sock, pBuffer + nSendIndex, nCount - nSendIndex, LFRP_SEND_FLAGS);
+    while ((nRet > 0 && nRet < nCount - nSendIndex) || (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError())))
+    {
+        if (nRet > 0 && nRet < nCount - nSendIndex)
+        {
+            nSendIndex += nRet;
+        }
+        else if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+        { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
+            PRINT_ERROR("%s %s,%d: send to Tun err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nCount);
+            Sleep(1);
+        }
+        nRet = send(sock, pBuffer + nSendIndex, nCount - nSendIndex, LFRP_SEND_FLAGS);
     }
-    else if (nRet == SOCKET_ERROR || nRet == 0)
+    if (nRet == SOCKET_ERROR || nRet == 0)
     {
         PRINT_ERROR("%s %s,%d: SocketID %d disconnect because send err %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, nRet);
     }
@@ -271,12 +281,22 @@ int EchoSvrWrite(int nIndex, int sock)
         for (int i = 0; i < vecBuf.size(); i++)
         {
             CBuffer& buf = vecBuf[i];
-            int nRet = send(sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
-            if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
-            { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
-                PRINT_ERROR("%s %s,%d: send to Tun err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
+            int nSendIndex = 0;
+            int nRet = send(sock, buf.pBuffer + nSendIndex, buf.nLen - nSendIndex, LFRP_SEND_FLAGS);
+            while ((nRet > 0 && nRet < buf.nLen - nSendIndex) || (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError())))
+            {
+                if (nRet > 0 && nRet < buf.nLen - nSendIndex)
+                {
+                    nSendIndex += nRet;
+                }
+                else if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
+                    PRINT_ERROR("%s %s,%d: send to Tun err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
+                    Sleep(1);
+                }
+                nRet = send(sock, buf.pBuffer + nSendIndex, buf.nLen - nSendIndex, LFRP_SEND_FLAGS);
             }
-            else if (nRet == SOCKET_ERROR || nRet == 0)
+            if (nRet == SOCKET_ERROR || nRet == 0)
             {
                 PRINT_ERROR("%s %s,%d: SocketID %d disconnect because send err %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, nRet);
             }

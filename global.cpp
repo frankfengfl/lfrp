@@ -92,7 +92,7 @@ void CLfrpSocket::ClearBuffer()
 
     for (int i = 0; i < vecSendBuf.size(); i++)
     {
-        CBuffer& buf = vecSendBuf[i];
+        CSendBuffer& buf = vecSendBuf[i];
         if (buf.pBuffer)
         {
             delete[] buf.pBuffer;
@@ -540,7 +540,7 @@ bool MoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
     {
         if (pDesSocket)
         {
-            CBuffer buf;
+            CSendBuffer buf;
             buf.nLen = pSrcSocket->nPackLen;
             buf.pBuffer = new char[pSrcSocket->nPackLen];
             FetchOnePack(pSrcSocket, buf.pBuffer);
@@ -599,7 +599,7 @@ bool MoveSendAESPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
         int nFillLen = nEncBufLen - nPackLen;
         if (pSrcSocket->nEncBufLen >= nEncBufLen)
         { // 包接收完全了
-            CBuffer buf;
+            CSendBuffer buf;
             buf.nLen = nEncBufLen;
             buf.pBuffer = new char[nEncBufLen];
             RemoveDataFromSocketBuffer(pSrcSocket->EncBuffer, pSrcSocket->pEncBuffer, pSrcSocket->nEncBufLen, pSrcSocket->nEncBufAlloc, buf.pBuffer, nEncBufLen);
@@ -1029,9 +1029,9 @@ bool IsReSendSocketError(int nError)
 #endif
 }
 
-void DeleteBufItems(CVecBuffer& vecBuf, int nIndex)
+void DeleteBufItems(CVecSendBuffer& vecBuf, int nIndex)
 {
-    CVecBuffer tmpBuf;
+    CVecSendBuffer tmpBuf;
     for (size_t i = nIndex; i < vecBuf.size(); i++)
     {
         tmpBuf.push_back(vecBuf[i]);

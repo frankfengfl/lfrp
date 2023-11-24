@@ -130,11 +130,27 @@ enum RecordTypeEnum
 
 struct CBuffer
 {
+    CBuffer()
+        : nLen(0), pBuffer(nullptr), uCreateTime(0)
+    {
+    }
+
     int nLen;
     char* pBuffer;
     uint64_t uCreateTime;
 };
 typedef std::vector<CBuffer> CVecBuffer;
+
+struct CSendBuffer : public CBuffer
+{
+    CSendBuffer()
+        : nSendIndex(0)
+    {
+    }
+
+    int nSendIndex;
+};
+typedef std::vector<CSendBuffer> CVecSendBuffer;
 
 class CLfrpSocket
 {
@@ -165,7 +181,7 @@ public:
     int nBufAlloc;              // 分配的pBuffer大小
 
     //发送队列
-    CVecBuffer vecSendBuf;      // lfrpTun里存AES加密数据，避免重复加解密；其他存原始数据
+    CVecSendBuffer vecSendBuf;      // lfrpTun里存AES加密数据，避免重复加解密；其他存原始数据
 
     unsigned int nAcceptSec;    // Accept的时间
     unsigned int nLastRecvSec;  // 最后一次接收数据的时间，有心跳包，防止假连
@@ -266,7 +282,7 @@ int ListenSocket(SOCKET& sockListen, const char* pIPAddress, int nPort);
 // 判断是否需要等一下再发送，比如缓冲区堵住
 bool IsReSendSocketError(int nError);
 
-void DeleteBufItems(CVecBuffer& vecBuf, int nIndex);
+void DeleteBufItems(CVecSendBuffer& vecBuf, int nIndex);
 
 uint64_t GetCurMilliSecond();
 unsigned int GetCurSecond();

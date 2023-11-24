@@ -331,13 +331,23 @@ int EchoCliWrite(int nIndex, int sock)
         str += c;
     }
     pSockDataMapAry[nIndex].insert(std::make_pair(sock, str));
-    int nRet = send(sock, str.c_str(), str.length(), LFRP_SEND_FLAGS);
-    if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
-    { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
-        PRINT_ERROR("%s %s,%d: send to Tun err size %d wsaerr %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, str.length(), WSAGetLastError());
-        //FireWriteEvent(sock);
+    int nSendIndex = 0;
+    int nRet = send(sock, str.c_str() + nSendIndex, str.length() - nSendIndex, LFRP_SEND_FLAGS);
+    while ((nRet > 0 && nRet < str.length() - nSendIndex) || (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError())))
+    {
+        if (nRet > 0 && nRet < str.length() - nSendIndex)
+        {
+            nSendIndex += nRet;
+        }
+        else if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+        { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
+            PRINT_ERROR("%s %s,%d: send to Tun err size %d wsaerr %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, str.length(), WSAGetLastError());
+            Sleep(1);
+            //FireWriteEvent(sock);
+        }
+        nRet = send(sock, str.c_str() + nSendIndex, str.length() - nSendIndex, LFRP_SEND_FLAGS);
     }
-    else if (nRet == SOCKET_ERROR || nRet == 0)
+    if (nRet == SOCKET_ERROR || nRet == 0)
     {
         PRINT_ERROR("%s %s,%d: SocketID %d disconnect because send err %x\n", GetCurTimeStr(), __FUNCTION__, __LINE__, sock, nRet);
     }

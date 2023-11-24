@@ -36,7 +36,7 @@ void CloseServerSocket(CSocketPair& pair)
 void CloseVistorSocket(CSocketPair& pair)
 {
     // 访问者关闭，发结束消息给Server
-    CBuffer buf;
+    CSendBuffer buf;
     MakeTunEndPack(buf);
 #ifdef USE_AES
     // lfrpTun的vecSendBuf里存AES加密后的数据，避免重复加解密
@@ -295,7 +295,7 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                 bool nError = false;
                 for (int i = 0; i < pair.pServer->vecSendBuf.size(); i++)
                 {
-                    CBuffer& buf = pair.pServer->vecSendBuf[i];
+                    CSendBuffer& buf = pair.pServer->vecSendBuf[i];
 
                     // 调试日志
                     int nType, nPakLen, nSocketID, nSeq;
@@ -312,12 +312,22 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                     PRINT_INFO("%s Tun %s,%d: Server send socketID %d pack to BusServer size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
                     //开始send
-                    nRet = send(pair.pServer->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
-                    while (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                    //nRet = send(pair.pServer->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                    int nSendIndex = 0;
+                    nRet = send(pair.pServer->sock, buf.pBuffer + nSendIndex, buf.nLen - nSendIndex, LFRP_SEND_FLAGS);
+                    while ((nRet > 0 && nSendIndex + nRet < buf.nLen) || (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError())))
                     { // 缓冲区堵塞等一下重发
-                        PRINT_ERROR("%s Tun %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
-                        Sleep(1);
-                        nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                        if (nRet > 0 && nRet < buf.nLen - nSendIndex)
+                        {
+                            PRINT_ERROR("%s Tun %s,%d: send to Server err size %d send %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen, nRet);
+                            nSendIndex += nRet;
+                        }
+                        else if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                        {
+                            PRINT_ERROR("%s Tun %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
+                            Sleep(1);
+                        }
+                        nRet = send(pair.pServer->sock, buf.pBuffer + nSendIndex, buf.nLen - nSendIndex, LFRP_SEND_FLAGS);
                     }
                     //RecordSocketData(RECORD_TYPE_STUN_SEND, pair.pServer->sock, buf.pBuffer, buf.nLen);
                     delete[] buf.pBuffer;
@@ -349,7 +359,7 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                 bool nError = false;
                 for (int i = 0; i < pair.pVistor->vecSendBuf.size(); i++)
                 {
-                    CBuffer& buf = pair.pVistor->vecSendBuf[i];
+                    CSendBuffer& buf = pair.pVistor->vecSendBuf[i];
                     
                     // 调试日志
                     int nType, nPakLen, nSocketID, nSeq;
@@ -366,12 +376,22 @@ void ProcessWrite(CSocketPairMap& mapSocketPair, fd_set& fdWrite)
                     PRINT_INFO("%s Tun %s,%d: Vistor send socketID %d pack to Client size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
                     //开始send
-                    nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
-                    while (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                    //nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                    int nSendIndex = 0;
+                    nRet = send(pair.pVistor->sock, buf.pBuffer + nSendIndex, buf.nLen - nSendIndex, LFRP_SEND_FLAGS);
+                    while ((nRet > 0 && nRet < buf.nLen - nSendIndex) || (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError())))
                     { // 缓冲区堵塞等一下重发
-                        PRINT_ERROR("%s Tun %s,%d: send to Vistor err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
-                        Sleep(1);
-                        nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                        if (nRet > 0 && nRet < buf.nLen - nSendIndex)
+                        {
+                            PRINT_ERROR("%s Tun %s,%d: send to Vistor err size %d send %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen, nRet);
+                            nSendIndex += nRet;
+                        }
+                        else if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                        {
+                            PRINT_ERROR("%s Tun %s,%d: send to Vistor err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
+                            Sleep(1);
+                        }
+                        nRet = send(pair.pVistor->sock, buf.pBuffer + nSendIndex, buf.nLen - nSendIndex, LFRP_SEND_FLAGS);
                     }
                     //RecordSocketData(RECORD_TYPE_CTUN_SEND, pair.pVistor->sock, buf.pBuffer, buf.nLen);
                     delete[] buf.pBuffer;
@@ -857,7 +877,7 @@ int TunWrite(int nIndex, int sock)
                 bool nError = false;
                 for (int i = 0; i < pair.pServer->vecSendBuf.size(); i++)
                 {
-                    CBuffer& buf = pair.pServer->vecSendBuf[i];
+                    CSendBuffer& buf = pair.pServer->vecSendBuf[i];
 
                     // 调试日志
                     int nType, nPakLen, nSocketID, nSeq;
@@ -874,13 +894,21 @@ int TunWrite(int nIndex, int sock)
                     PRINT_INFO("%s Tun %s,%d: Server send socketID %d pack to BusServer size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen, nSeq);
 
                     //开始send
-                    nRet = send(pair.pServer->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                    nRet = send(pair.pServer->sock, buf.pBuffer + buf.nSendIndex, buf.nLen - buf.nSendIndex, LFRP_SEND_FLAGS);
+                    if (nRet > 0 && nRet < buf.nLen - buf.nSendIndex)
+                    { // 发送一半，等下次发剩余的
+                        buf.nSendIndex += nRet;
+                        nError = true;
+                        CVecSendBuffer& vecBuf = pair.pServer->vecSendBuf;
+                        DeleteBufItems(vecBuf, i);
+                        break;
+                    }
                     if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
                     {
                         PRINT_ERROR("%s Tun %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
                         // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
                         nError = true;
-                        CVecBuffer& vecBuf = pair.pServer->vecSendBuf;
+                        CVecSendBuffer& vecBuf = pair.pServer->vecSendBuf;
                         DeleteBufItems(vecBuf, i);
                         /*while (i > 0)
                         {
@@ -916,7 +944,7 @@ int TunWrite(int nIndex, int sock)
                 bool nError = false;
                 for (int i = 0; i < pair.pVistor->vecSendBuf.size(); i++)
                 {
-                    CBuffer& buf = pair.pVistor->vecSendBuf[i];
+                    CSendBuffer& buf = pair.pVistor->vecSendBuf[i];
 
                     // 调试日志
                     int nType, nPakLen, nSocketID, nSeq;
@@ -933,13 +961,21 @@ int TunWrite(int nIndex, int sock)
                     PRINT_INFO("%s Tun %s,%d: Vistor send sock %d socketID %d pack to Client size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pair.pVistor->sock, nSocketID, buf.nLen, nSeq);
 
                     //开始send
-                    nRet = send(pair.pVistor->sock, buf.pBuffer, buf.nLen, LFRP_SEND_FLAGS);
+                    nRet = send(pair.pVistor->sock, buf.pBuffer + buf.nSendIndex, buf.nLen - buf.nSendIndex, LFRP_SEND_FLAGS);
+                    if (nRet > 0 && nRet < buf.nLen - buf.nSendIndex)
+                    { // 发送一半，等下次发剩余的
+                        buf.nSendIndex += nRet;
+                        nError = true;
+                        CVecSendBuffer& vecBuf = pair.pVistor->vecSendBuf;
+                        DeleteBufItems(vecBuf, i);
+                        break;
+                    }
                     if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
                     {
                         PRINT_ERROR("%s Tun %s,%d: send to Vistor err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen);
                         // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
                         nError = true;
-                        CVecBuffer& vecBuf = pair.pVistor->vecSendBuf;
+                        CVecSendBuffer& vecBuf = pair.pVistor->vecSendBuf;
                         DeleteBufItems(vecBuf, i);
                         /*while (i > 0)
                         {

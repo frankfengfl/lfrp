@@ -34,7 +34,7 @@ std::string strAesKey = "asdf1234567890";
 // 业务服务连接失败，需要通知client侧清掉这条连接
 void DoBusSocketErr(CLfrpSocket* pSocket, CLfrpSocket* pTunSocket)
 {
-    CBuffer buf;
+    CSendBuffer buf;
     int nSeq = GetNextSeq(SEQ_SERVER, pSocket->sock);
     RemoveSeqKey(pSocket->sock);
     MakeDataEndPack(buf, pSocket->nSocketID, nSeq);
@@ -193,7 +193,7 @@ int ProcessRead(CLfrpSocket* pTunSocket, CSocketMap& mapBusinessSvr, fd_set& fdR
                     int nSeq = GetNextSeq(SEQ_SERVER, pSocket->sock);
                     PRINT_INFO("%s Svr %s,%d: Svr socketID %d recv from BusinessServer pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, iter->first, nRet, nSeq);
 
-                    CBuffer buf;
+                    CSendBuffer buf;
                     buf.pBuffer = new char[PACK_SIZE_DATA + nRet];
                     buf.nLen = PACK_SIZE_DATA + nRet;
                     int* pData = (int*)buf.pBuffer;
@@ -240,7 +240,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
         {
             for (int i = 0; i < pTunSocket->vecSendBuf.size(); i++)
             {
-                CBuffer& buf = pTunSocket->vecSendBuf[i];
+                CSendBuffer& buf = pTunSocket->vecSendBuf[i];
 
                 int nType, nPakLen, nSocketID, nSeq;
                 GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
@@ -255,12 +255,22 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
 #endif
 
                 //开始send
-                nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
-                while (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                //nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
+                int nSendIndex = 0;
+                nRet = send(pTunSocket->sock, pSendBuffer + nSendIndex, nSendLen - nSendIndex, LFRP_SEND_FLAGS);
+                while ((nRet > 0 && nRet < nSendLen - nSendIndex) || (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError())))
                 { // 缓冲区堵塞等一下重发
-                    PRINT_ERROR("%s Svr %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSendLen);
-                    Sleep(1);
-                    nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
+                    if (nRet > 0 && nRet < nSendLen - nSendIndex)
+                    {
+                        PRINT_ERROR("%s Svr %s,%d: send to Server err size %d send %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSendLen, nRet);
+                        nSendIndex += nRet;
+                    }
+                    else if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                    {
+                        PRINT_ERROR("%s Svr %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSendLen);
+                        Sleep(1);
+                    }
+                    nRet = send(pTunSocket->sock, pSendBuffer + nSendIndex, nSendLen - nSendIndex, LFRP_SEND_FLAGS);
                 }
                 //RecordSocketData(RECORD_TYPE_TUN_SEND, pTunSocket->sock, pSendBuffer, nSendLen);
 #ifdef USE_AES
@@ -305,7 +315,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
             {
                 for (int i = 0; i < pSocket->vecSendBuf.size(); i++)
                 {
-                    CBuffer& buf = pSocket->vecSendBuf[i];
+                    CSendBuffer& buf = pSocket->vecSendBuf[i];
                     if (buf.nLen > PACK_SIZE_DATA)
                     {
                         int nType, nPakLen, nSocketID, nSeq;
@@ -313,12 +323,22 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
                         PRINT_INFO("%s Svr %s,%d: Server send socketID %d pack to Bussiness size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen - PACK_SIZE_DATA, nSeq);
 
                         //开始send
-                        nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, LFRP_SEND_FLAGS);
-                        while (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                        //nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, LFRP_SEND_FLAGS);
+                        int nSendIndex = 0;
+                        nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA + nSendIndex, buf.nLen - PACK_SIZE_DATA - nSendIndex, LFRP_SEND_FLAGS);
+                        while ((nRet > 0 && nRet < buf.nLen - PACK_SIZE_DATA - nSendIndex) || (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError())))
                         { // 缓冲区堵塞等一下重发
-                            PRINT_ERROR("%s Svr %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen - PACK_SIZE_DATA);
-                            Sleep(1);
-                            nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, LFRP_SEND_FLAGS);
+                            if (nRet > 0 && nRet < buf.nLen - PACK_SIZE_DATA - nSendIndex)
+                            {
+                                PRINT_ERROR("%s Svr %s,%d: send to Server err size %d send %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen - PACK_SIZE_DATA, nRet);
+                                nSendIndex += nRet;
+                            }
+                            else if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
+                            {
+                                PRINT_ERROR("%s Svr %s,%d: send to Server err size %d wsaerr WSAEWOULDBLOCK\n", GetCurTimeStr(), __FUNCTION__, __LINE__, buf.nLen - PACK_SIZE_DATA);
+                                Sleep(1);
+                            }
+                            nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA + nSendIndex, buf.nLen - PACK_SIZE_DATA - nSendIndex, LFRP_SEND_FLAGS);
                         }
                         //RecordSocketData(RECORD_TYPE_BUS_SEND, pTunSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA);
                         //事实上，这里可能会有nRet小于bufLen的情况
@@ -365,7 +385,7 @@ int ProcessWrite(CLfrpSocket* pTunSocket, CSocketMap& mapSvr, fd_set& fdWrite)
 
 void SendTunLogin(CLfrpSocket* pTunSocket)
 {
-    CBuffer buf;
+    CSendBuffer buf;
     buf.pBuffer = new char[PACK_SIZE_AUTH];
     buf.nLen = PACK_SIZE_AUTH;
     int* pData = (int*)buf.pBuffer;
@@ -441,7 +461,7 @@ int mainSelect()
                     if (sockTun.sock != INVALID_SOCKET && uSec - uLastHeartBeatSec > 10)
                     { // 10秒心跳
                         uLastHeartBeatSec = uSec;
-                        CBuffer buf;
+                        CSendBuffer buf;
                         MakeHeartBeatPack(buf);
                         sockTun.vecSendBuf.push_back(buf);
                         sockTun.Op = OP_WRITE;
@@ -508,7 +528,7 @@ CSocketWorkerMap* pSvrMapAry = nullptr;   // 按照工作线程数，落对应�
 // 业务服务连接失败，需要通知client侧清掉这条连接
 void DoBusSocketErr(int nIndex, CLfrpSocket* pSocket, CLfrpSocket* pTunSocket)
 {
-    CBuffer buf;
+    CSendBuffer buf;
     int nSeq = GetNextSeq(nIndex, SEQ_SERVER, pSocket->sock);
     RemoveSeqKey(pSocket->sock);
     MakeDataEndPack(buf, pSocket->nSocketID, nSeq);
@@ -710,7 +730,7 @@ int SvrRead(int nIndex, int sock, char* pBuffer, int nCount)
             int nSeq = GetNextSeq(nIndex, SEQ_SERVER, pSocket->sock);
             PRINT_INFO("%s Svr %s,%d: Svr socketID %d recv from BusinessServer pack size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, pSocket->nSocketID, nCount, nSeq);
 
-            CBuffer buf;
+            CSendBuffer buf;
             buf.pBuffer = new char[PACK_SIZE_DATA + nCount];
             buf.nLen = PACK_SIZE_DATA + nCount;
             int* pData = (int*)buf.pBuffer;
@@ -764,7 +784,7 @@ int SvrWrite(int nIndex, int sock)
             CLfrpSocket* pTunSocket = pSocket;
             for (int i = 0; i < pTunSocket->vecSendBuf.size(); i++)
             {
-                CBuffer& buf = pTunSocket->vecSendBuf[i];
+                CSendBuffer& buf = pTunSocket->vecSendBuf[i];
 
                 int nType, nPakLen, nSocketID, nSeq;
                 GetInfoFromBuf(buf, nType, nPakLen, nSocketID, nSeq);
@@ -779,11 +799,19 @@ int SvrWrite(int nIndex, int sock)
 #endif
 
                 //开始send
-                nRet = send(pTunSocket->sock, pSendBuffer, nSendLen, LFRP_SEND_FLAGS);
+                nRet = send(pTunSocket->sock, pSendBuffer + buf.nSendIndex, nSendLen - buf.nSendIndex, LFRP_SEND_FLAGS);
+                if (nRet > 0 && nRet < nSendLen - buf.nSendIndex)
+                { // 发送一半，等下次发剩余的
+                    buf.nSendIndex += nRet;
+                    nError = true;
+                    CVecSendBuffer& vecBuf = pTunSocket->vecSendBuf;
+                    DeleteBufItems(vecBuf, i);
+                    break;
+                }
                 if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
                 { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
                     nError = true;
-                    CVecBuffer& vecBuf = pTunSocket->vecSendBuf;
+                    CVecSendBuffer& vecBuf = pTunSocket->vecSendBuf;
                     DeleteBufItems(vecBuf, i);
                     /*while (i > 0)
                     {
@@ -841,7 +869,7 @@ int SvrWrite(int nIndex, int sock)
             bool nError = false;
             for (int i = 0; i < pSocket->vecSendBuf.size(); i++)
             {
-                CBuffer& buf = pSocket->vecSendBuf[i];
+                CSendBuffer& buf = pSocket->vecSendBuf[i];
                 if (buf.nLen > PACK_SIZE_DATA)
                 {
                     int nType, nPakLen, nSocketID, nSeq;
@@ -849,11 +877,19 @@ int SvrWrite(int nIndex, int sock)
                     PRINT_INFO("%s Svr %s,%d: Server send socketID %d pack to Bussiness size %d seq %d\n", GetCurTimeStr(), __FUNCTION__, __LINE__, nSocketID, buf.nLen - PACK_SIZE_DATA, nSeq);
 
                     //开始send
-                    nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA, buf.nLen - PACK_SIZE_DATA, LFRP_SEND_FLAGS);
+                    nRet = send(pSocket->sock, buf.pBuffer + PACK_SIZE_DATA + buf.nSendIndex, buf.nLen - PACK_SIZE_DATA - buf.nSendIndex, LFRP_SEND_FLAGS);
+                    if (nRet > 0 && nRet < buf.nLen - PACK_SIZE_DATA - buf.nSendIndex)
+                    {
+                        buf.nSendIndex += nRet;
+                        nError = true;
+                        CVecSendBuffer& vecBuf = pSocket->vecSendBuf;
+                        DeleteBufItems(vecBuf, i);
+                        break;
+                    }
                     if (nRet == SOCKET_ERROR && IsReSendSocketError(WSAGetLastError()))
                     { // 堵住就等下一个EPOLLOUT事件，清掉已经发送的数据
                         nError = true;
-                        CVecBuffer& vecBuf = pTunSocket->vecSendBuf;
+                        CVecSendBuffer& vecBuf = pSocket->vecSendBuf;
                         DeleteBufItems(vecBuf, i);
                         /*while (i > 0)
                         {

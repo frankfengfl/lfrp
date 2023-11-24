@@ -409,6 +409,10 @@ void MoveSocketVec(std::vector<int>& vecDstSock, std::vector<int>& vecSrcSock, s
 
 int GetThreadIndexByNum(int nNum)
 {
+    if (nNum < 0)
+    {
+        nNum = -nNum;
+    }
     return nNum % nThreadCount;
 }
 
@@ -813,7 +817,7 @@ bool EpollMoveSendPack(CLfrpSocket* pSrcSocket, CLfrpSocket* pDesSocket)
     {
         if (pDesSocket)
         {
-            CBuffer buf;
+            CSendBuffer buf;
             buf.nLen = pSrcSocket->nPackLen;
             buf.pBuffer = new char[pSrcSocket->nPackLen];
             FetchOnePack(pSrcSocket, buf.pBuffer);
@@ -1132,7 +1136,7 @@ int SendSNHeartBeat(int sock)
         CLfrpSocket* pSock = GetSockFromInstanceMap(sock);
         if (pSock)
         {
-            CBuffer buf;
+            CSendBuffer buf;
             MakeHeartBeatPack(buf);
             pSock->vecSendBuf.push_back(buf);
             FireWriteEvent(sock);
